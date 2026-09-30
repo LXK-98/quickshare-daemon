@@ -140,20 +140,85 @@ impl Notifier {
 
     /// Shows an accept/deny prompt and waits for an answer.
     ///
-    /// Resolves on the first of: a button press, the notification being
-    /// dismissed (which counts as a decline — dismissing a request is an
-    /// answer), or `timeout` elapsing.
-    ///
-    /// The signal streams are subscribed **before** the notification is sent.
-    /// The other order is a race: a fast answer on a notification that is
-    /// already on screen can be signalled before the subscription exists, and
-    /// the prompt would then hang until it timed out.
+    /// Dismissing the notification counts as a decline: swiping away a request
+    /// is an answer, and the safe reading of it is no.
     pub async fn ask_consent(
         &self,
         summary: &str,
         body: &str,
         timeout: Duration,
     ) -> Result<Consent> {
+        let outcome = self
+            .await_action(
+                summary,
+                body,
+                &["accept", "Accept", "decline", "Decline"],
+                Urgency::Critical,
+                // Never expire on the server's schedule: `timeout` is ours, and
+                // a prompt that vanished on its own would leave the sending
+                // phone waiting with nothing on screen to explain it.
+                Expiry::Never,
+                timeout,
+            )
+            .await?;
+
+        Ok(match outcome {
+            Outcome::Chosen(key) if key == "accept" => Consent::Accept,
+            Outcome::Chosen(_) | Outcome::Dismissed => Consent::Decline,
+            Outcome::TimedOut => Consent::TimedOut,
+        })
+    }
+
+    /// Shows a notification carrying action buttons and waits for one.
+    ///
+    /// `actions` is flat (key, label) pairs, as the spec wants them. Returns
+    /// the key that was pressed, or `None` if the notification was dismissed or
+    /// the timeout ran out.
+    ///
+    /// Used for the "Open" / "Show in Folder" buttons on a completed transfer,
+    /// where a long timeout is appropriate — the user may not be at the machine
+    /// when the file lands, and GNOME keeps the notification in its list.
+    pub async fn show_with_actions(
+        &self,
+        summary: &str,
+        body: &str,
+        actions: &[&str],
+        urgency: Urgency,
+        timeout: Duration,
+    ) -> Result<Option<String>> {
+        let outcome = self
+            .await_action(
+                summary,
+                body,
+                actions,
+                urgency,
+                Expiry::ServerDefault,
+                timeout,
+            )
+            .await?;
+
+        Ok(match outcome {
+            Outcome::Chosen(key) => Some(key),
+            Outcome::Dismissed | Outcome::TimedOut => None,
+        })
+    }
+
+    /// Posts a notification with buttons and resolves on the first of: a button
+    /// press, a dismissal, or the timeout.
+    ///
+    /// The signal streams are subscribed **before** the notification is sent.
+    /// The other order is a race: a fast answer on a notification that is
+    /// already on screen can be signalled before the subscription exists, and
+    /// the wait would then hang until it timed out.
+    async fn await_action(
+        &self,
+        summary: &str,
+        body: &str,
+        actions: &[&str],
+        urgency: Urgency,
+        expiry: Expiry,
+        timeout: Duration,
+    ) -> Result<Outcome> {
         let mut invoked = self
             .proxy
             .receive_action_invoked()
@@ -166,21 +231,10 @@ impl Notifier {
             .context("subscribing to NotificationClosed")?;
 
         let id = self
-            .notify_inner(
-                summary,
-                body,
-                // Pairs of (key, label). The label is what the user sees.
-                &["accept", "Accept", "decline", "Decline"],
-                Urgency::Critical,
-                // Never expire on the server's schedule: `timeout` is ours,
-                // and a prompt that vanished on its own would leave the
-                // sending phone waiting with nothing on screen to explain it.
-                Expiry::Never,
-                0,
-            )
+            .notify_inner(summary, body, actions, urgency, expiry, 0)
             .await?;
 
-        let answer = tokio::time::timeout(timeout, async {
+        let outcome = tokio::time::timeout(timeout, async {
             loop {
                 tokio::select! {
                     Some(signal) = invoked.next() => {
@@ -196,17 +250,12 @@ impl Notifier {
                         if args.id != id {
                             continue;
                         }
-                        return match args.action_key {
-                            "accept" => Consent::Accept,
-                            "decline" => Consent::Decline,
-                            // `default` is the spec's key for clicking the
-                            // body of the notification rather than a button.
-                            // Clicking the message is not consent.
-                            other => {
-                                tracing::debug!(action = other, "ignoring unrecognised action");
-                                continue;
-                            }
-                        };
+                        // `default` is the spec's key for clicking the body
+                        // rather than a button, and is not one of ours.
+                        if args.action_key == "default" {
+                            continue;
+                        }
+                        return Outcome::Chosen(args.action_key.to_owned());
                     }
                     Some(signal) = closed.next() => {
                         let Ok(args) = signal.args() else { continue };
@@ -214,35 +263,33 @@ impl Notifier {
                             continue;
                         }
                         let reason = CloseReason::from(args.reason);
-                        tracing::debug!(?reason, "consent notification closed");
-                        return match reason {
-                            // Swiped away: an answer, and the answer is no.
-                            CloseReason::Dismissed => Consent::Decline,
-                            // We closed it, or it expired despite Expiry::Never.
-                            // Neither is the user answering, so let the
-                            // timeout decide.
+                        tracing::debug!(?reason, "notification closed");
+                        match reason {
+                            // Swiped away by the user: an answer.
+                            CloseReason::Dismissed => return Outcome::Dismissed,
+                            // We closed it, or it expired. Neither is the user
+                            // answering, so let the timeout decide.
                             _ => continue,
-                        };
+                        }
                     }
                     else => {
-                        // Both streams ended, which means the bus connection
-                        // is gone. Nothing can answer now.
+                        // Both streams ended, so the bus connection is gone.
                         tracing::warn!("notification signal streams ended");
-                        return Consent::TimedOut;
+                        return Outcome::TimedOut;
                     }
                 }
             }
         })
         .await
-        .unwrap_or(Consent::TimedOut);
+        .unwrap_or(Outcome::TimedOut);
 
-        // Take the prompt off screen either way: it has been answered, and on
-        // a timeout it is stale and no longer answerable.
+        // Take it off screen either way: it has been answered, or it is stale
+        // and no longer answerable.
         if let Err(err) = self.close(id).await {
-            tracing::debug!("could not close the consent notification: {err:#}");
+            tracing::debug!("could not close notification {id}: {err:#}");
         }
 
-        Ok(answer)
+        Ok(outcome)
     }
 
     /// The single place `Notify` is called, so the app name, icon and hints
@@ -280,6 +327,17 @@ impl Notifier {
             .await
             .context("sending a notification")
     }
+}
+
+/// What ended a wait on a notification's buttons.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Outcome {
+    /// A button was pressed; carries its key.
+    Chosen(String),
+    /// The user swiped the notification away.
+    Dismissed,
+    /// Nobody answered in time.
+    TimedOut,
 }
 
 /// The spec's `urgency` hint.

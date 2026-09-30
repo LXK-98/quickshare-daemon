@@ -31,8 +31,10 @@ mod config;
 mod meminfo;
 mod network;
 mod notify;
+mod open;
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -515,13 +517,22 @@ async fn handle_event(
                     format!("Wi-Fi details from {source}"),
                     format!("{ssid} · {password}"),
                 ),
-                Some(TransferPayload::Files(files)) => (
-                    match files.len() {
-                        1 => format!("Received {}", file_name(&files[0])),
-                        n => format!("Received {n} files"),
-                    },
-                    format!("From {source} · in {}", config.download_dir.display()),
-                ),
+                // Files get their own notification, with buttons.
+                Some(TransferPayload::Files(files)) => {
+                    let paths: Vec<PathBuf> = files
+                        .iter()
+                        // rqs_lib reports bare file names, not paths: it writes
+                        // them into the download directory it was configured
+                        // with, and reports what it called them.
+                        .map(|name| config.download_dir.join(name))
+                        .collect();
+                    spawn_received_files_notification(
+                        Arc::clone(notifier),
+                        source.to_owned(),
+                        paths,
+                    );
+                    return;
+                }
                 None => (format!("Received something from {source}"), String::new()),
             };
 
@@ -558,6 +569,69 @@ async fn handle_event(
         // Protocol handshake states; noise for our purposes.
         _ => {}
     }
+}
+
+/// Posts the "files received" notification and acts on its buttons.
+///
+/// Spawned rather than awaited: the user may be away from the machine when a
+/// file lands, and GNOME keeps the notification in its list long after it
+/// leaves the screen. The event loop must not be held open for that.
+///
+/// The one-hour timeout is a backstop against tasks accumulating, not a
+/// deadline anyone should notice. After it, the notification stays in GNOME's
+/// list but its buttons stop doing anything.
+fn spawn_received_files_notification(notifier: Arc<Notifier>, source: String, paths: Vec<PathBuf>) {
+    const BUTTON_LIFETIME: Duration = Duration::from_secs(60 * 60);
+
+    tokio::spawn(async move {
+        let Some(first) = paths.first() else { return };
+
+        let summary = match paths.len() {
+            1 => format!("Received {}", file_name(&first.to_string_lossy())),
+            n => format!("Received {n} files"),
+        };
+        let body = format!("From {source}");
+
+        // "Open" only makes sense for a single file; for several, the folder is
+        // the only sensible destination. `reveal` selects them all.
+        let actions: &[&str] = if paths.len() == 1 {
+            &["open", "Open", "folder", "Show in Folder"]
+        } else {
+            &["folder", "Show in Folder"]
+        };
+
+        let chosen = match notifier
+            .show_with_actions(&summary, &body, actions, Urgency::Normal, BUTTON_LIFETIME)
+            .await
+        {
+            Ok(chosen) => chosen,
+            Err(err) => {
+                tracing::warn!("could not post the completion notification: {err:#}");
+                return;
+            }
+        };
+
+        match chosen.as_deref() {
+            Some("open") => {
+                if let Err(err) = open::open_file(first).await {
+                    // Refused (an executable kind) or xdg-open is missing.
+                    // Showing the file is the useful thing to do instead of
+                    // nothing.
+                    tracing::warn!("{err:#}");
+                    if let Err(err) = open::reveal(&paths).await {
+                        tracing::warn!("could not reveal the file either: {err:#}");
+                    }
+                }
+            }
+            Some("folder") => {
+                if let Err(err) = open::reveal(&paths).await {
+                    tracing::warn!("could not show the files in the file manager: {err:#}");
+                }
+            }
+            Some(other) => tracing::debug!(action = other, "unrecognised action"),
+            None => {}
+        }
+    });
 }
 
 /// A short phrase for what is being sent, for the consent prompt.

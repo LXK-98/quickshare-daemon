@@ -5,9 +5,12 @@ A headless [Quick Share](https://www.android.com/better-together/quick-share/)
 a background service, a config file, and desktop notifications to accept or
 deny incoming transfers.
 
-**Status: it builds, runs, and is discoverable from other devices — but no
-file has been received through it yet.** See [docs/JOURNAL.md](docs/JOURNAL.md)
-for exactly where things stand and [PLAN.md](PLAN.md) for where they are going.
+**Status: receiving works.** Files sent from an Android phone arrive in the
+download directory, with a notification to accept or decline them and, once
+they land, buttons to open the file or show it in the file manager. Sending
+*from* this machine is not implemented yet. See
+[docs/JOURNAL.md](docs/JOURNAL.md) for exactly where things stand and
+[PLAN.md](PLAN.md) for where they are going.
 
 At idle it uses **6.2 MB RSS / 3.5 MB PSS across 2 threads**, against Packet's
 44.7 MB / 42.4 MB across 30 ([docs/MEASUREMENTS.md](docs/MEASUREMENTS.md)).

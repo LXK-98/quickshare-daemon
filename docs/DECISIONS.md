@@ -283,3 +283,68 @@ debounce are **not** verified — that needs the network actually taken down.
 bound as `nm_state_changed` with `#[zbus(signal, name = "StateChanged")]`. The
 generated *stream type* is still named after the D-Bus signal
 (`StateChangedStream`), not after the Rust method.
+
+---
+
+## D-010 — The "Open" button refuses files that would execute
+
+**Date:** 2026-09-30
+
+**Context.** A completed transfer's notification carries "Open" and "Show in
+Folder" buttons. "Open" runs `xdg-open` on a file whose name was chosen
+entirely by the sender.
+
+`xdg-open` on a `.desktop` file **launches it**. So the naive version of this
+feature turns "you accepted a file from a nearby device" into "you executed
+code from a nearby device", with one click, on a button sitting under whatever
+name the sender picked — `Invoice.pdf.desktop` renders as `Invoice.pdf` in many
+file listings.
+
+**Decision.** `open_file` refuses a small deny-list of extensions
+(`.desktop`, `.sh`, `.bash`, `.run`, `.appimage`, `.bin`) and the caller falls
+back to revealing the file in the file manager, which is safe for anything.
+
+This is not real protection — the file is already written to `~/Downloads`, and
+the user can run it from there. The point is narrower: **the notification
+button should not be the thing that runs it.** A button offered by the daemon
+carries an implicit claim that pressing it is safe, and for these files it is
+not.
+
+**Rejected.**
+
+- *Checking the executable bit instead.* `rqs_lib` writes received files
+  without it, so it would never fire, while `.desktop` handling does not depend
+  on it anyway.
+- *A MIME-type check via `xdg-mime`.* Another process spawn on every click, to
+  answer a question the extension already answers for the cases that matter.
+- *Not offering "Open" at all.* It is the single most useful thing to do with a
+  photo someone just sent, and refusing the whole feature over a handful of
+  extensions is the wrong trade.
+
+**Consequence.** A legitimately received shell script cannot be opened from the
+notification. "Show in Folder" still works, which is the right destination for
+a file you need to look at before running.
+
+---
+
+## D-011 — Revealing files goes through `FileManager1`, not `xdg-open`
+
+**Date:** 2026-09-30
+
+**Context.** "Show in Folder" could just `xdg-open` the containing directory.
+
+**Decision.** Call `org.freedesktop.FileManager1.ShowItems`, which opens the
+folder **with the files selected**, and fall back to `xdg-open` on the
+directory only when no implementation is running.
+
+Selecting the file is what the phrase means to whoever asks for the feature —
+especially when a transfer drops several files into a `~/Downloads` that
+already has hundreds, or when `rqs_lib` names them things like
+`tv75Zr9J92SObYbT.mp4`, which is exactly what it does. `ShowItems` also takes
+several URIs at once, so a multi-file transfer selects all of them.
+
+Verified present on this system: Nautilus implements the interface.
+
+**Note.** URIs are percent-encoded by hand in `open.rs`. Received filenames
+come from the sender and routinely contain spaces, `#` and non-ASCII, each of
+which silently truncates or corrupts a naively formatted `file://` URI.

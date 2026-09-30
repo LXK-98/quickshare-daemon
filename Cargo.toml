@@ -32,6 +32,8 @@ tokio = { version = "1.45", features = [
     "time",
     "io-util",
     "signal",
+    # For spawning xdg-open from the notification's "Open" button.
+    "process",
 ] }
 serde = { version = "1.0", features = ["derive"] }
 toml = "0.9"

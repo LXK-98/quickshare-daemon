@@ -139,24 +139,25 @@ daemon's footprint.
 - [x] Start `rqs_lib::RQS` with name/visibility/port from config — runs; the
       listener binds, mDNS broadcasts and BLE starts, confirmed by
       `avahi-browse`
-- [~] Handle inbound transfer events: request → notification → accept/deny —
+- [x] Handle inbound transfer events: request → notification → accept/deny —
       the notification half is confirmed against live GNOME Shell 50.4 (prompt,
-      both buttons, timeout, close). The wiring to `rqs_lib` compiles and runs
-      but **no real transfer has gone through it yet**
-- [ ] Save files to `download_dir`; text/URL payloads shown in a notification
-      (with an "Open"/"Copy" action) — text, URL and Wi-Fi payloads are shown;
-      **the "Open"/"Copy" actions are not implemented.** Open needs a scheme
-      allowlist before handing a remote-supplied URL to `xdg-open`, and Copy
-      needs a Wayland clipboard path, which a daemon with no window does not
-      have for free. Deliberately deferred, not forgotten
+      both buttons, timeout, close), and a file was received from an Android
+      phone on 2026-09-30
+- [~] Save files to `download_dir`; text/URL payloads shown in a notification
+      (with an "Open"/"Copy" action) — files land in `download_dir` and their
+      notification carries **"Open"** and **"Show in Folder"** buttons (D-010,
+      D-011). Text, URL and Wi-Fi payloads are shown but have no buttons yet:
+      "Open" on a URL needs a scheme allowlist before handing a
+      remote-supplied string to `xdg-open`, and "Copy" needs a Wayland
+      clipboard path, which a daemon with no window does not get for free
 - [~] Completion/failure notifications — written, not exercised by a real
       transfer
 - [x] systemd user unit (`quickshare-daemon.service`) — written, not yet
       installed or tested
-- [~] **Checkpoint:** idle RSS/PSS measured — **6.2 MB RSS / 3.5 MB PSS /
+- [x] **Checkpoint:** idle RSS/PSS measured — **6.2 MB RSS / 3.5 MB PSS /
       2 threads** in release, against a ≤ 8 MB target and a 44.7 MB baseline
-      (docs/MEASUREMENTS.md). **Testing with an Android phone is the one thing
-      left in Phase 1**, and needs a human with a phone
+      (docs/MEASUREMENTS.md). A file was successfully sent from an Android
+      phone on 2026-09-30
 
 ### Phase 2 — Robustness (~0.5–1 day)
 

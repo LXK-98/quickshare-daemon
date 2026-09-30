@@ -3,6 +3,45 @@
 Per-session record: what was done, what is verified, what broke, what is next.
 Newest first.
 
+## 2026-09-30 — Receiving confirmed from Android; Open / Show in Folder buttons
+
+**A file was sent successfully from an Android phone.** That closes the last
+open item in Phase 1's checkpoint. Reported by the user rather than observed
+here — see the caveat at the end of this entry.
+
+**Added, on request:** the notification for a completed file transfer now
+carries **"Open"** and **"Show in Folder"** buttons.
+
+- `src/open.rs` — `reveal()` via `org.freedesktop.FileManager1.ShowItems`,
+  which opens the folder with the files *selected* and takes several URIs at
+  once (D-011), falling back to `xdg-open` on the directory if no file manager
+  implements it. `open_file()` via `xdg-open`, refusing extensions that would
+  execute rather than display (D-010).
+- `src/notify.rs` — the signal-waiting logic behind `ask_consent` extracted
+  into `await_action`, so button-carrying notifications are one primitive
+  rather than two copies. `ask_consent` is now a thin mapping over it.
+- `src/main.rs` — completed file transfers post their notification from a
+  spawned task with a one-hour button lifetime, since the user may be away from
+  the machine when a file lands.
+
+Two details that came out of reading the source rather than guessing:
+`rqs_lib` reports **bare file names, not paths**, so they must be joined with
+`download_dir`; and `file://` URIs are percent-encoded by hand because received
+names routinely contain spaces, `#` and non-ASCII, any of which silently
+corrupts a naively formatted URI.
+
+**Verified.** Clippy clean, 21/21 tests. `org.freedesktop.FileManager1` is
+present on this system (Nautilus).
+
+**Caveat on the Android test.** No file newer than 20:56 exists in
+`~/Downloads`, and this daemon first ran at about 21:09 — so the successful
+transfer cannot be attributed to it from the filesystem alone. Packet was also
+running and advertising throughout. Worth redoing once with the daemon in the
+foreground and Packet stopped, watching for the consent prompt and the
+`transfer finished` log line, before treating end-to-end receiving as proven.
+
+---
+
 ## 2026-09-30 (milestone) — It builds, it runs, it hits the memory target
 
 `protoc` was installed, which unblocked everything.
