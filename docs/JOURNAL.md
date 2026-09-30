@@ -31,7 +31,17 @@ names routinely contain spaces, `#` and non-ASCII, any of which silently
 corrupts a naively formatted URI.
 
 **Verified.** Clippy clean, 21/21 tests. `org.freedesktop.FileManager1` is
-present on this system (Nautilus).
+present on this system (Nautilus), and `reveal()` was called against it for
+real with two URIs at once — the multi-file selection path — and accepted, so
+the D-Bus signature is right. That was worth checking directly: a wrong
+signature is a runtime error that unit tests cannot see and that would make
+the button fail silently.
+
+The notification-with-buttons path itself is the same `await_action` code
+already confirmed twice by hand on the consent prompt (Accept at 31.3 s,
+Decline at 8.8 s). A later attempt to have the new buttons clicked timed out
+unanswered after 90 s, so "Open" and "Show in Folder" have not been pressed by
+a human — only the code underneath them has been exercised.
 
 **Caveat on the Android test.** No file newer than 20:56 exists in
 `~/Downloads`, and this daemon first ran at about 21:09 — so the successful
