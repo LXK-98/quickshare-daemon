@@ -1,0 +1,107 @@
+# Journal
+
+Per-session record: what was done, what is verified, what broke, what is next.
+Newest first.
+
+## 2026-09-30 — Project bootstrap, blocked on `protoc`
+
+**Done.**
+
+- Read PLAN.md and verified its claims against this machine and against the
+  pinned `rqs_lib` source. Three factual errors found and corrected in PLAN.md;
+  see "Plan corrections" below.
+- `git init`; GPL-3.0 `LICENSE` (verbatim, copied from the Packet clone,
+  md5 `1ebbd3e3…`, 674 lines); `Cargo.toml`; `README.md`.
+- `src/meminfo.rs` — self-measurement of RSS/PSS/private-dirty/threads from
+  procfs. Reused by the Phase 4 tuning work.
+- `src/main.rs` — `current_thread` runtime, RQS boot, transfer event loop,
+  consent plumbing, SIGTERM/SIGINT shutdown, boot + interval memory logging.
+- `data/quickshare-daemon.service` — systemd user unit.
+- `docs/` — DECISIONS (D-001…D-005), RQS_LIB_NOTES, MEASUREMENTS, this journal.
+
+**Verified.**
+
+- Rust 1.94.1; `dbus-1` 1.16.2; NetworkManager and bluetooth both active.
+- GNOME Shell 50.4's notification server advertises `actions` and `persistence`
+  (`GetCapabilities`), so PLAN.md's accept/deny-inside-a-notification design
+  works. No fallback UI needed.
+- The dependency tree resolves against `rqs_lib` rev `17702ed` and every
+  dependency compiles — `bluer`, `btleplug`, `mdns-sd`, `p256`, `sys_metrics`,
+  `tracing-subscriber` all built.
+- `src/meminfo.rs` compiles clean under edition 2024 and its 3 unit tests pass,
+  checked with `rustc --test` against the already-built `anyhow` rlib, since
+  `cargo test` is blocked by the same build failure as `cargo build`.
+- Packet baseline re-measured: 44.7 MB RSS / 42.4 MB PSS / 30 threads. In
+  MEASUREMENTS.md.
+- 154 unique crates in the resolved tree. Seven of them are Bluetooth/D-Bus:
+  `bluer`, `btleplug`, `bluez-async`, `dbus`, `dbus-tokio`, `dbus-crossroads`,
+  `libdbus-sys` — recorded as evidence in D-002.
+
+- **`src/main.rs` type-checks, via a stub.** Since the real `rqs_lib` cannot be
+  built here, its public API was transcribed from the pinned source into a
+  signature-only stub crate (218 lines, no behaviour) and the project's real
+  sources were checked against it:
+  `cargo check --all-targets` clean, `cargo clippy --all-targets` clean with
+  zero warnings, `cargo test` 3/3 passing.
+- **The event loop runs.** Built against the stub and executed for 8 s: the
+  boot log, the 5 s settle measurement, the `QSD_MEASURE_SECS` interval
+  (correctly *not* firing immediately, because of the `measure.reset()`),
+  SIGTERM handling and the shutdown measurement all behaved as intended, and it
+  reported **4.8 MB RSS / 3.1 MB PSS / 1 thread**. Recorded in MEASUREMENTS.md
+  with the caveats it deserves.
+
+  The stub lives in the session scratchpad at `typecheck/` and is deliberately
+  **not** committed: it would drift out of sync with the pin and start lying.
+  RQS_LIB_NOTES.md holds everything needed to regenerate it.
+
+**Still not verified.** The stub proves the code is type-correct against the API
+*as documented in RQS_LIB_NOTES.md*. If a signature there was transcribed
+wrongly, the stub reproduces the mistake faithfully and the check passes anyway.
+Nothing about protocol behaviour, mDNS, BLE or the real footprint is verified.
+
+**Blocked.**
+
+`cargo build` fails in `rqs_lib`'s build script:
+
+```
+core_lib/build.rs:15:6: called `Result::unwrap()` on an `Err` value:
+Custom { kind: NotFound, error: "Could not find `protoc`. …" }
+```
+
+`prost-build` 0.13.5 does not bundle a protobuf compiler (confirmed: no
+`protoc` anywhere in the crate), `protoc` is not installed, `$PROTOC` is unset,
+and `sudo` on this machine requires a password. Fedora 44 ships
+`protobuf-compiler` 3.19.6, which is new enough for prost-build. Needs:
+
+```
+sudo dnf install protobuf-compiler
+```
+
+Nothing else is known to block the build. `src/main.rs` has therefore **never
+been compiled** — expect ordinary type errors on the first successful build.
+
+**Next.**
+
+1. Install `protoc`; `cargo build`; fix whatever `src/main.rs` got wrong.
+2. Run it, confirm the daemon appears on an Android device's Quick Share sheet,
+   and record the idle footprint in MEASUREMENTS.md — the Phase 1 checkpoint.
+3. Then Phase 1 proper, in PLAN.md's order: `config.toml` loading, then
+   notifications with accept/deny actions.
+
+**Plan corrections made to PLAN.md.**
+
+- `rqs_lib` rev: the plan's `c9ac93f…` is upstream HEAD, not what Packet pins.
+  Corrected to `17702ed…`, with reasoning in D-001.
+- Packet reference commit: `e42c097` → `f634d66`, the local clone's HEAD, which
+  already contains the network-restart logic Phase 2 needs.
+- "The logic we need is tangled into `src/window.rs` (~2,900 lines)": the RQS
+  lifecycle is there, but the transfer handling is in
+  `src/widgets/receive_transfer.rs` (831 lines) and
+  `src/widgets/recipient_card.rs` (567). Total Packet `src/` is 5,578 lines,
+  not ~6,200.
+
+**Risks found that PLAN.md did not name.** All now recorded: the `experimental`
+feature pulling in two BLE stacks *and* a second D-Bus stack (D-002),
+`rqs_lib` logging through `log` rather than `tracing` (RQS_LIB_NOTES), the
+`protoc` build requirement (above), and `TransferPayload::Wifi` existing as a
+payload kind Phase 1 should not mishandle (RQS_LIB_NOTES).

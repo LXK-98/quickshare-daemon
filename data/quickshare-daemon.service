@@ -1,0 +1,47 @@
+[Unit]
+Description=Quick Share daemon
+Documentation=https://github.com/nozwock/packet
+# Bluetooth and the network are used opportunistically: rqs_lib logs a warning
+# and carries on if the BLE listener cannot start, so neither is a hard
+# requirement. After= only orders startup, it does not pull anything in.
+After=network.target bluetooth.target
+
+[Service]
+Type=simple
+ExecStart=%h/.cargo/bin/quickshare-daemon
+# SIGHUP reloads the config without restarting (PLAN.md Phase 2), which is what
+# `systemctl --user reload` will send once that is implemented.
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=on-failure
+RestartSec=5s
+
+# glibc allocates up to 8 malloc arenas per core by default, and each arena is
+# a 64 MB virtual reservation that dirties a page at a time. Capping it at 2 is
+# the single cheapest memory win for a threaded daemon and costs only some
+# allocator contention, which a current_thread runtime barely has. PLAN.md
+# Phase 4; measure with and without.
+Environment=MALLOC_ARENA_MAX=2
+# Logging goes to stderr; the daemon drops its own timestamps when it sees
+# JOURNAL_STREAM, since journald adds them.
+Environment=RUST_LOG=quickshare_daemon=info,rqs_lib=warn
+
+# Hardening. Deliberately not sandboxed further: the daemon needs the network,
+# the session D-Bus socket for notifications, and write access to the user's
+# download directory, which is most of what a sandbox would take away. The
+# whole point of the project is to not pay Flatpak's ~4 MB for that sandbox.
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+MemoryDenyWriteExecute=yes
+# The service exists to receive files, so writing outside the download
+# directory is never legitimate. Tightened once the config file lands and the
+# directory is known at install time.
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=%h/Downloads
+
+[Install]
+WantedBy=default.target
