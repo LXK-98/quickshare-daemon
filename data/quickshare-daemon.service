@@ -15,11 +15,12 @@ ExecReload=/bin/kill -HUP $MAINPID
 Restart=on-failure
 RestartSec=5s
 
-# glibc allocates up to 8 malloc arenas per core by default, and each arena is
-# a 64 MB virtual reservation that dirties a page at a time. Capping it at 2 is
-# the single cheapest memory win for a threaded daemon and costs only some
-# allocator contention, which a current_thread runtime barely has. PLAN.md
-# Phase 4; measure with and without.
+# Measured as a no-op on 2026-09-30: three runs with and without showed
+# differences inside the run-to-run noise. That is the expected result, not a
+# disappointing one -- this caps glibc's per-thread malloc arenas, and the
+# current_thread runtime already got the daemon down to 2 threads, so there are
+# no extra arenas to cap. Kept as insurance if rqs_lib ever spawns more.
+# See docs/MEASUREMENTS.md.
 Environment=MALLOC_ARENA_MAX=2
 # Logging goes to stderr; the daemon drops its own timestamps when it sees
 # JOURNAL_STREAM, since journald adds them.

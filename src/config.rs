@@ -200,13 +200,22 @@ impl Config {
     }
 }
 
-/// The hostname, falling back to a generic name.
+/// The hostname, without its domain, falling back to a generic name.
 ///
 /// `rqs_lib` would default to the hostname too, but writing it into the config
 /// file makes it visible and editable instead of mysterious.
+///
+/// The domain is stripped because this string is shown on a phone's share
+/// sheet: a DHCP-assigned FQDN like `dell.fritz.box` is what the machine is
+/// called on the network, not what its owner calls it.
 fn default_device_name() -> String {
     std::fs::read_to_string("/proc/sys/kernel/hostname")
-        .map(|name| name.trim().to_owned())
+        .map(|name| {
+            let name = name.trim();
+            name.split_once('.')
+                .map_or(name, |(host, _domain)| host)
+                .to_owned()
+        })
         .ok()
         .filter(|name| !name.is_empty())
         .unwrap_or_else(|| "Linux device".to_owned())
@@ -222,6 +231,15 @@ fn default_download_dir() -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_default_device_name_drops_the_domain() {
+        // The real machine this was developed on reports `dell.fritz.box`,
+        // which is not a name anyone would choose to see on their phone.
+        let name = default_device_name();
+        assert!(!name.contains('.'), "got {name:?}");
+        assert!(!name.is_empty());
+    }
 
     #[test]
     fn defaults_round_trip_through_toml() {

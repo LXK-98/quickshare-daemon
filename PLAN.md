@@ -136,25 +136,27 @@ daemon's footprint.
 
 - [x] Cargo project, GPL-3.0 license, README with credits
 - [x] Config loading with defaults (`serde` + `toml`) — unit-tested
-- [ ] Start `rqs_lib::RQS` with name/visibility/port from config — **written,
-      never executed.** Type-checked only against a stub of `rqs_lib`; the real
-      crate cannot be built until `protoc` is installed
-- [ ] Handle inbound transfer events: request → notification → accept/deny —
-      **half verified.** The notification half is confirmed against live GNOME
-      Shell 50.4 (prompt, buttons, timeout, close); the `rqs_lib` half is
-      unexecuted, as above
+- [x] Start `rqs_lib::RQS` with name/visibility/port from config — runs; the
+      listener binds, mDNS broadcasts and BLE starts, confirmed by
+      `avahi-browse`
+- [~] Handle inbound transfer events: request → notification → accept/deny —
+      the notification half is confirmed against live GNOME Shell 50.4 (prompt,
+      both buttons, timeout, close). The wiring to `rqs_lib` compiles and runs
+      but **no real transfer has gone through it yet**
 - [ ] Save files to `download_dir`; text/URL payloads shown in a notification
       (with an "Open"/"Copy" action) — text, URL and Wi-Fi payloads are shown;
       **the "Open"/"Copy" actions are not implemented.** Open needs a scheme
       allowlist before handing a remote-supplied URL to `xdg-open`, and Copy
       needs a Wayland clipboard path, which a daemon with no window does not
       have for free. Deliberately deferred, not forgotten
-- [ ] Completion/failure notifications — written, not exercised by a real
+- [~] Completion/failure notifications — written, not exercised by a real
       transfer
 - [x] systemd user unit (`quickshare-daemon.service`) — written, not yet
       installed or tested
-- [ ] **Checkpoint:** measure idle RSS/PSS, test with an Android phone —
-      blocked on `protoc`
+- [~] **Checkpoint:** idle RSS/PSS measured — **6.2 MB RSS / 3.5 MB PSS /
+      2 threads** in release, against a ≤ 8 MB target and a 44.7 MB baseline
+      (docs/MEASUREMENTS.md). **Testing with an Android phone is the one thing
+      left in Phase 1**, and needs a human with a phone
 
 ### Phase 2 — Robustness (~0.5–1 day)
 
@@ -182,12 +184,18 @@ daemon's footprint.
 
 ### Phase 4 — Memory tuning & packaging (~0.5 day)
 
-- [ ] Release profile: `lto = true`, `codegen-units = 1`, `opt-level = "s"`,
-      `panic = "abort"`, `strip = true`
-- [ ] `MALLOC_ARENA_MAX=2` in the unit; try `malloc_trim` after transfers
-- [ ] Check which threads rqs_lib, mdns-sd and the BLE stack spawn; trim if
-      possible
-- [ ] Measure again; compare with Packet
+- [x] Release profile: `lto = true`, `codegen-units = 1`, `opt-level = "s"`,
+      `panic = "abort"`, `strip = true` — set from the start; it is the
+      difference between 15.9 MB (debug) and 6.2 MB
+- [x] `MALLOC_ARENA_MAX=2` in the unit — **measured as a no-op** (3 runs each
+      way, all differences inside the noise): `current_thread` already got the
+      daemon to 2 threads, so there are no per-thread arenas to cap. Kept as
+      insurance. `malloc_trim` after transfers is untested and, at 0.8 MB
+      private-dirty idle, probably not worth it
+- [x] Check which threads rqs_lib, mdns-sd and the BLE stack spawn — 2 threads
+      total at idle, down from Packet's 30. Nothing left worth trimming
+- [x] Measure again; compare with Packet — 7× less RSS, 12× less PSS, 15×
+      fewer threads (docs/MEASUREMENTS.md)
 - [ ] Install script or `cargo install` + unit/extension install
 
 ### Phase 5 — Optional: ~0 MB idle via socket activation (~1–2 days)

@@ -38,46 +38,52 @@ is the number to beat.
 
 ## quickshare-daemon
 
-| Date       | Build | RSS    | PSS    | PrivDirty | Threads | Notes |
-|------------|-------|--------|--------|-----------|---------|-------|
-| 2026-09-30 | debug | 4.8 MB | 3.1 MB | 3.1 MB    | 1       | **`rqs_lib` stubbed out** — skeleton only, see below |
-| _pending_  |       |        |        |           |         | real build blocked: `protoc` not installed |
+Release build, commit `465384c`+, idle 12 s after start, `experimental` feature
+on (both BLE stacks), `current_thread` runtime. Measured externally from
+`/proc/<pid>/`, which agreed with the daemon's own self-report to within 0.1 MB.
 
-### The stubbed figure, and what it does and does not tell us
+| Date       | Build   | RSS    | PSS    | PrivDirty | Threads |
+|------------|---------|--------|--------|-----------|---------|
+| 2026-09-30 | debug   | 15.9 MB| 13.1 MB| 13.1 MB   | 3       |
+| 2026-09-30 | release | 6.2 MB | 3.5 MB | 0.8 MB    | 2       |
 
-4.8 MB RSS / 3.1 MB PSS / **1 thread**, debug build, with `rqs_lib` replaced by
-a signature-only stub. So this is the cost of *our* code plus tokio, tracing and
-`dirs` — and nothing of the protocol.
+**PLAN.md's target was ≤ 8 MB RSS, ideally 4–6 MB. The release build lands at
+~6.3 MB.**
 
-What it establishes:
+Against the baseline: **7× less RSS, 12× less PSS, 15× fewer threads** than
+Packet. Only ~0.8 MB is private dirty — the rest of the RSS is file-backed
+(the binary and shared libraries), which the kernel can drop under pressure.
 
-- The `current_thread` runtime really does run on one thread (D-003). Packet
-  needs 30. Since threads are the mechanism behind Packet's ~31 MB of
-  heap/arena overhead, this is the single most important early signal.
-- Our own overhead is ~3.1 MB PSS **before optimisation** — debug build, no
-  LTO, no stripping, no `MALLOC_ARENA_MAX`.
+### `MALLOC_ARENA_MAX=2` makes no measurable difference
 
-What it does not establish: anything about the real footprint. The remaining
-budget for `rqs_lib` + mDNS + both BLE stacks + `libdbus` + the `zbus` still to
-come is roughly 8 − 3 = **5 MB**, and the release profile should hand a chunk of
-the 3 MB back. Plausible, but D-002 stays the open question until measured.
+PLAN.md Phase 4 proposes it. Three runs each, with the variable genuinely
+unset versus set to 2:
 
-Reproduced with: a stub crate at `scratchpad/typecheck/`, disposable — see
-JOURNAL.md 2026-09-30.
+| Config      | RSS (kB)           | PSS (kB)           | PrivDirty (kB)  |
+|-------------|--------------------|--------------------|-----------------|
+| unset       | 6196, 6172, 6396   | 3454, 3501, 3476   | 808, 860, 832   |
+| `=2`        | 6176, 6576, 6532   | 3434, 3614, 3497   | 792, 784, 804   |
 
-Record for each entry: the commit, `debug` or `release`, whether the
-`experimental` feature (both BLE stacks — see D-002) was on, and the runtime
-flavour. Those four are the variables that move the number.
+Every difference is inside the run-to-run spread. This is the expected result
+rather than a disappointing one: the tuning exists to stop glibc creating one
+malloc arena per thread, and `current_thread` already got the thread count to
+2. D-003 removed the problem that D-004's checklist was going to tune.
 
-### Measurements worth taking at the Phase 1 checkpoint
+Kept in the systemd unit anyway. It costs nothing, and it is insurance if a
+future `rqs_lib` starts spawning threads.
 
-1. Idle, debug build, `experimental` on — the honest starting point.
-2. Idle, release build with the tuned profile (`lto`, `opt-level = "s"`,
-   `panic = "abort"`, `strip`) — expected to be the big drop.
-3. Idle, release, `experimental` **off** — prices what D-002 is buying. Only
-   worth doing if (2) misses the 8 MB target.
-4. Peak during a single large file transfer, plus idle again ~60 s after it
-   finishes — shows whether the allocator gives pages back, i.e. whether
-   PLAN.md's `malloc_trim` idea is needed.
-5. Thread count in every case. Threads are the mechanism behind Packet's
-   ~31 MB, so this is the leading indicator.
+**A caution about single readings.** The first release measurement reported
+3592 kB private-dirty — 4× every later reading — and was taken while the
+process still had 3 threads and was presumably mid-startup. Believing it would
+have meant reporting a 4.5× improvement from `MALLOC_ARENA_MAX` that does not
+exist. Take three readings after the thread count has settled.
+
+## Discoverability
+
+Confirmed 2026-09-30 with `avahi-browse -rpt _FC9F5ED42C8A._tcp`: the daemon
+advertises on every interface, at the port it reports in its own log, with the
+device name in the TXT record's `n=` field. An Android phone on the same
+network was visible in the same browse, advertising the same service type.
+
+This is not a substitute for actually sending a file from a phone, which
+remains the open item in PLAN.md's Phase 1 checkpoint.

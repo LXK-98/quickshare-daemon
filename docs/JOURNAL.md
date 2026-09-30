@@ -3,6 +3,48 @@
 Per-session record: what was done, what is verified, what broke, what is next.
 Newest first.
 
+## 2026-09-30 (milestone) — It builds, it runs, it hits the memory target
+
+`protoc` was installed, which unblocked everything.
+
+**It compiled on the first attempt**, with no changes to code that had only
+ever been checked against a hand-written stub. The stub approach in
+RQS_LIB_NOTES.md was worth the time.
+
+**It runs.** Config written on first start, notification server reached, TCP
+listener bound, mDNS broadcasting, BLE listener started, NetworkManager
+watched, clean SIGTERM shutdown that cancels every task and unregisters the
+mDNS service.
+
+**It is discoverable.** `avahi-browse -rpt _FC9F5ED42C8A._tcp` sees it on every
+interface at the port it logged, device name in the TXT record. An Android
+phone was advertising the same service type on the same network.
+
+**It hits the target.** Release build, idle, measured from `/proc` externally:
+
+| | RSS | PSS | PrivDirty | Threads |
+|---|---|---|---|---|
+| Packet | 44.7 MB | 42.4 MB | 34.6 MB | 30 |
+| this | 6.2 MB | 3.5 MB | 0.8 MB | 2 |
+
+PLAN.md asked for ≤ 8 MB. Clippy clean, 17/17 tests, now against the real
+`rqs_lib`.
+
+**`MALLOC_ARENA_MAX=2` measured as a no-op**, three runs each way. The first
+comparison appeared to show a 4.5× private-dirty win; it was an outlier from a
+process still starting, and an empty `MALLOC_ARENA_MAX=` is not the same as
+unset. Both mistakes were mine and both would have gone into the docs as fact
+if the run had not been repeated.
+
+**Fixed:** the default device name was the FQDN (`dell.fritz.box`), which is
+what a phone would have shown on its share sheet. Now the short hostname. An
+existing `config.toml` keeps the old value — delete it to regenerate.
+
+**The one thing left in Phase 1:** sending an actual file from a phone. It
+needs a human holding one.
+
+---
+
 ## 2026-09-30 (later still) — Network watcher and SIGHUP reload
 
 **Done.** Both of Phase 2's items that do not depend on `rqs_lib` being
