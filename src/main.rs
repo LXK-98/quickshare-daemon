@@ -14,36 +14,36 @@
 // Foundation, either version 3 of the License, or (at your option) any later
 // version. See LICENSE for the full text.
 
-//! Boots [`rqs_lib::RQS`] on a single-threaded tokio runtime and reports every
-//! transfer event it produces.
+//! Receives files over Quick Share, asking for consent through a desktop
+//! notification.
 //!
-//! This is the Phase 1 skeleton from PLAN.md: it proves out the three things the
-//! rest of the project rests on — that the build works, that a `current_thread`
-//! runtime is sufficient for `rqs_lib`, and what the idle memory floor actually
-//! is with both BLE stacks linked in. Config loading and desktop notifications
-//! land on top of this loop; they are not here yet.
+//! Structure: a single-threaded tokio runtime owns [`rqs_lib::RQS`] and a
+//! `select!` loop over its transfer events. Everything that has to wait on a
+//! human — the accept/deny prompt — is spawned off that loop so a pending
+//! prompt cannot stall a concurrent transfer.
 //!
-//! Temporary environment overrides, replaced by `config.toml` in Phase 1:
+//! Configuration lives in `config.toml`; see [`config::Config`]. One
+//! environment variable remains, for development only:
 //!
-//! - `QSD_DEVICE_NAME` — name advertised to nearby devices (default: hostname)
-//! - `QSD_DOWNLOAD_DIR` — where received files land (default: XDG download dir)
-//! - `QSD_PORT` — fixed TCP port (default: a random one)
-//! - `QSD_AUTO_ACCEPT=1` — accept every incoming transfer without asking.
-//!   **Testing only.** Until notifications exist there is no way to consent, so
-//!   without this the protocol cannot be exercised end to end.
 //! - `QSD_MEASURE_SECS` — memory measurement interval (default: 60)
 
+mod config;
 mod meminfo;
+mod notify;
 
-use std::path::PathBuf;
+use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
 use rqs_lib::channel::{ChannelMessage, Message, MessageClient, TransferAction, TransferKind};
+use rqs_lib::hdl::info::TransferPayload;
 use rqs_lib::{RQS, TransferState, Visibility};
-use tokio::sync::broadcast::error::RecvError;
+use tokio::sync::broadcast::{Sender, error::RecvError};
 
+use crate::config::Config;
 use crate::meminfo::MemSnapshot;
+use crate::notify::{Consent, Notifier, Urgency, format_bytes};
 
 fn main() -> Result<()> {
     init_tracing();
@@ -52,7 +52,8 @@ fn main() -> Result<()> {
     // ever calls `tokio::spawn`, never `block_on`, `spawn_blocking` or
     // `std::thread::spawn` (verified in the pinned checkout), so it does not
     // need worker threads of its own. Each thread we avoid is a stack plus,
-    // under glibc, potentially another malloc arena.
+    // under glibc, potentially another malloc arena. See
+    // docs/DECISIONS.md#d-003.
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -84,37 +85,54 @@ fn init_tracing() {
     }
 }
 
-async fn run() -> Result<()> {
-    let device_name = std::env::var("QSD_DEVICE_NAME").ok();
-    let download_dir = download_dir()?;
-    let port = match std::env::var("QSD_PORT") {
-        Ok(raw) => Some(
-            raw.parse::<u32>()
-                .with_context(|| format!("QSD_PORT is not a port number: {raw:?}"))?,
-        ),
-        Err(_) => None,
-    };
-    let auto_accept = std::env::var("QSD_AUTO_ACCEPT").is_ok_and(|v| v == "1");
-    let measure_interval = Duration::from_secs(
-        std::env::var("QSD_MEASURE_SECS")
-            .ok()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(60),
-    );
+/// What the daemon remembers about a transfer while it is in flight.
+///
+/// Only what the *final* notification needs: by the time a transfer finishes,
+/// its metadata no longer says who sent it, and "Received 3 files" without a
+/// sender is a worse message than we can afford to send.
+#[derive(Debug)]
+struct ActiveTransfer {
+    source: String,
+    /// Whether consent was given. A transfer that ends without it needs no
+    /// closing notification — the user already answered, and telling them that
+    /// the thing they declined did not happen is noise.
+    accepted: bool,
+}
 
-    if auto_accept {
+async fn run() -> Result<()> {
+    let (config, config_path) = Config::load_or_create()?;
+    config.ensure_download_dir()?;
+    tracing::info!(path = %config_path.display(), "loaded configuration");
+
+    if let Some(false) = config.port_is_available() {
+        // Not fatal: rqs_lib does the real bind, and the port may free up.
         tracing::warn!(
-            "QSD_AUTO_ACCEPT=1: every incoming transfer will be accepted without asking"
+            port = ?config.port,
+            "the configured port is already in use; the service will probably fail to start"
+        );
+    }
+
+    let notifier = Arc::new(Notifier::new().await?);
+    if !notifier.supports_actions() {
+        tracing::error!(
+            "this notification server does not support action buttons, so incoming \
+             transfers cannot be accepted. Every request will be declined on timeout. \
+             Add senders to auto_accept_from in {} to work around it",
+            config_path.display()
         );
     }
 
     // `RQS::new` only stores configuration; nothing is bound or advertised
-    // until `run()`. Visibility is hardcoded until config lands in Phase 1.
+    // until `run()`.
     let mut rqs = RQS::new(
-        Visibility::Visible,
-        port,
-        Some(download_dir.clone()),
-        device_name,
+        if config.visible {
+            Visibility::Visible
+        } else {
+            Visibility::Invisible
+        },
+        config.port.map(u32::from),
+        Some(config.download_dir.clone()),
+        Some(config.device_name.clone()),
     );
 
     // Subscribe before `run()`: this is a broadcast channel, so a receiver
@@ -139,14 +157,17 @@ async fn run() -> Result<()> {
     tracing::info!(
         device_name = %rqs.get_device_name(),
         port = ?rqs.port_number,
-        download_dir = %download_dir.display(),
+        visible = config.visible,
+        download_dir = %config.download_dir.display(),
         "Quick Share service started"
     );
+
+    let mut active: HashMap<String, ActiveTransfer> = HashMap::new();
 
     // The first measurement, taken after mDNS and BLE have settled, is the
     // number PLAN.md's target is about. Recorded in docs/MEASUREMENTS.md.
     let mut settled = Box::pin(tokio::time::sleep(Duration::from_secs(5)));
-    let mut measure = tokio::time::interval(measure_interval);
+    let mut measure = tokio::time::interval(measure_interval());
     measure.reset(); // do not fire immediately; the settle timer covers boot
 
     let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
@@ -155,7 +176,9 @@ async fn run() -> Result<()> {
     loop {
         tokio::select! {
             event = events.recv() => match event {
-                Ok(message) => handle_event(&message, &actions, auto_accept),
+                Ok(message) => {
+                    handle_event(&message, &config, &notifier, &actions, &mut active).await;
+                }
                 // The channel holds 50 messages. Progress updates during a
                 // large transfer are the plausible way to overrun it, and
                 // losing those is survivable — but losing a consent request
@@ -176,7 +199,9 @@ async fn run() -> Result<()> {
                     Err(err) => tracing::warn!("could not measure memory: {err:#}"),
                 }
                 // Re-arm far in the future; the interval takes over from here.
-                settled.as_mut().reset(tokio::time::Instant::now() + Duration::from_secs(86_400));
+                settled
+                    .as_mut()
+                    .reset(tokio::time::Instant::now() + Duration::from_secs(86_400));
             }
             _ = measure.tick() => {
                 if let Ok(snap) = MemSnapshot::read() {
@@ -204,15 +229,27 @@ async fn run() -> Result<()> {
     Ok(())
 }
 
+/// The memory measurement interval. Development knob; not in the config file.
+fn measure_interval() -> Duration {
+    Duration::from_secs(
+        std::env::var("QSD_MEASURE_SECS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(60),
+    )
+}
+
 /// Reacts to one message from `rqs_lib`.
 ///
 /// Consent is delivered back through the *same* broadcast channel the events
 /// arrive on ([`Message::Lib`]), which means our own replies are echoed back to
 /// us. Handling only [`Message::Client`] is what keeps that from looping.
-fn handle_event(
+async fn handle_event(
     message: &ChannelMessage,
-    actions: &tokio::sync::broadcast::Sender<ChannelMessage>,
-    auto_accept: bool,
+    config: &Config,
+    notifier: &Arc<Notifier>,
+    actions: &Sender<ChannelMessage>,
+    active: &mut HashMap<String, ActiveTransfer>,
 ) {
     let Some(client) = message.msg.as_client() else {
         // Our own `Message::Lib` reply, echoed back by the broadcast channel.
@@ -226,8 +263,16 @@ fn handle_event(
         metadata,
     } = client;
 
+    // Outbound transfers are Phase 3. Until then they cannot happen, but
+    // reacting to them as if they were inbound would be worse than ignoring
+    // them.
+    if *kind == TransferKind::Outbound {
+        tracing::debug!(%id, ?state, "ignoring outbound transfer event (Phase 3)");
+        return;
+    }
+
     let state = state.clone().unwrap_or_default();
-    tracing::debug!(%id, ?kind, ?state, "transfer event");
+    tracing::debug!(%id, ?state, "transfer event");
 
     match state {
         TransferState::WaitingForUserConsent => {
@@ -235,93 +280,221 @@ fn handle_event(
                 .as_ref()
                 .and_then(|m| m.source.as_ref())
                 .map(|s| s.name.clone())
-                .unwrap_or_else(|| "unknown device".into());
-            let kind_of_payload = metadata.as_ref().map(|m| format!("{:?}", m.payload_kind));
-            let bytes = metadata.as_ref().map(|m| m.total_bytes);
-            let pin = metadata.as_ref().and_then(|m| m.pin_code.clone());
+                .unwrap_or_else(|| "An unknown device".to_owned());
+            let bytes = metadata.as_ref().map_or(0, |m| m.total_bytes);
+            let description = metadata
+                .as_ref()
+                .map_or_else(|| "something".to_owned(), describe_payload);
 
-            tracing::info!(
-                %id,
-                %source,
-                payload = ?kind_of_payload,
-                ?bytes,
-                ?pin,
-                "incoming transfer awaiting consent"
+            if config.is_auto_accepted(&source) {
+                tracing::info!(%id, %source, "auto-accepting: sender is in auto_accept_from");
+                active.insert(
+                    id.clone(),
+                    ActiveTransfer {
+                        source: source.clone(),
+                        accepted: true,
+                    },
+                );
+                send_action(actions, id, TransferAction::ConsentAccept);
+
+                // Say so anyway. An automatic transfer the user never hears
+                // about is indistinguishable from one they did not authorise.
+                let _ = notifier
+                    .show(
+                        &format!("Receiving {description}"),
+                        &format!(
+                            "From {source} · {} · accepted automatically",
+                            format_bytes(bytes)
+                        ),
+                        Urgency::Low,
+                    )
+                    .await;
+                return;
+            }
+
+            active.insert(
+                id.clone(),
+                ActiveTransfer {
+                    source: source.clone(),
+                    // Set when the answer comes back.
+                    accepted: false,
+                },
             );
 
-            // Phase 1 replaces this with a desktop notification carrying
-            // accept/deny actions. Until then, consent is all-or-nothing.
-            if auto_accept {
-                let action = TransferAction::ConsentAccept;
-                tracing::warn!(%id, ?action, "auto-accepting (QSD_AUTO_ACCEPT=1)");
-                send_action(actions, id, action);
-            } else {
-                tracing::warn!(
-                    %id,
-                    "no way to ask the user yet: declining. Set QSD_AUTO_ACCEPT=1 to test transfers"
+            // The prompt can wait up to `accept_timeout_secs`, so it must not
+            // run on the event loop: a second sender arriving meanwhile would
+            // otherwise not be handled until the first prompt was answered.
+            //
+            // The consequence is that the answer arrives as a plain
+            // `Message::Lib` send with no ordering guarantee relative to other
+            // events, which is exactly how rqs_lib expects consent to arrive.
+            let notifier = Arc::clone(notifier);
+            let actions = actions.clone();
+            let id = id.clone();
+            let timeout = Duration::from_secs(config.accept_timeout_secs);
+            let pin = metadata.as_ref().and_then(|m| m.pin_code.clone());
+
+            tokio::spawn(async move {
+                let summary = format!("{source} wants to send {description}");
+                let mut body = format_bytes(bytes);
+                // The PIN is how the user confirms the sender is the device in
+                // front of them rather than a stranger on the same network.
+                if let Some(pin) = pin {
+                    body.push_str(" · PIN ");
+                    body.push_str(&pin);
+                }
+
+                let consent = match notifier.ask_consent(&summary, &body, timeout).await {
+                    Ok(consent) => consent,
+                    Err(err) => {
+                        // A broken notification path must not leave the sender
+                        // hanging; refusing is the safe direction to fail.
+                        tracing::error!(%id, "could not ask for consent, declining: {err:#}");
+                        Consent::Decline
+                    }
+                };
+
+                tracing::info!(%id, ?consent, "consent decision");
+                send_action(
+                    &actions,
+                    &id,
+                    match consent {
+                        Consent::Accept => TransferAction::ConsentAccept,
+                        Consent::Decline | Consent::TimedOut => TransferAction::ConsentDecline,
+                    },
                 );
-                send_action(actions, id, TransferAction::ConsentDecline);
+            });
+        }
+
+        TransferState::ReceivingFiles => {
+            // First progress event means consent was accepted and the transfer
+            // is underway.
+            if let Some(transfer) = active.get_mut(id) {
+                transfer.accepted = true;
             }
-        }
-        TransferState::Finished => {
-            let files = metadata.as_ref().and_then(|m| m.payload.clone());
-            tracing::info!(%id, ?kind, payload = ?files, "transfer finished");
-        }
-        TransferState::Rejected | TransferState::Cancelled | TransferState::Disconnected => {
-            tracing::info!(%id, ?kind, ?state, "transfer ended without completing");
-        }
-        // Progress. `ReceivingFiles`/`SendingFiles` repeat per chunk, so this
-        // stays at trace level to keep a large transfer from flooding the log.
-        TransferState::ReceivingFiles | TransferState::SendingFiles => {
             if let Some(m) = metadata {
                 tracing::trace!(%id, ack = m.ack_bytes, total = m.total_bytes, "progress");
             }
         }
+
+        TransferState::Finished => {
+            let transfer = active.remove(id);
+            let source = transfer
+                .as_ref()
+                .map_or("an unknown device", |t| t.source.as_str());
+            let payload = metadata.as_ref().and_then(|m| m.payload.as_ref());
+
+            tracing::info!(%id, %source, payload = ?payload, "transfer finished");
+
+            let (summary, body) = match payload {
+                Some(TransferPayload::Text(text)) => (
+                    format!("Text from {source}"),
+                    // The whole point is to read it, and GNOME truncates long
+                    // bodies itself.
+                    text.clone(),
+                ),
+                Some(TransferPayload::Url(url)) => (format!("Link from {source}"), url.clone()),
+                // Not offered as a "connect" action: joining a network is a
+                // system-level change, and the password is better read off the
+                // notification than acted on automatically.
+                Some(TransferPayload::Wifi { ssid, password, .. }) => (
+                    format!("Wi-Fi details from {source}"),
+                    format!("{ssid} · {password}"),
+                ),
+                Some(TransferPayload::Files(files)) => (
+                    match files.len() {
+                        1 => format!("Received {}", file_name(&files[0])),
+                        n => format!("Received {n} files"),
+                    },
+                    format!("From {source} · in {}", config.download_dir.display()),
+                ),
+                None => (format!("Received something from {source}"), String::new()),
+            };
+
+            if let Err(err) = notifier.show(&summary, &body, Urgency::Normal).await {
+                tracing::warn!(%id, "could not post the completion notification: {err:#}");
+            }
+        }
+
+        TransferState::Rejected | TransferState::Cancelled | TransferState::Disconnected => {
+            let transfer = active.remove(id);
+            tracing::info!(%id, ?state, "transfer ended without completing");
+
+            // Only worth a notification if it had been accepted and then
+            // failed. A transfer the user declined ending is not news.
+            if let Some(transfer) = transfer.filter(|t| t.accepted) {
+                let reason = match state {
+                    TransferState::Cancelled => "the sender cancelled it",
+                    TransferState::Disconnected => "the connection dropped",
+                    _ => "it was rejected",
+                };
+                if let Err(err) = notifier
+                    .show(
+                        &format!("Transfer from {} failed", transfer.source),
+                        &format!("Incomplete: {reason}."),
+                        Urgency::Normal,
+                    )
+                    .await
+                {
+                    tracing::warn!(%id, "could not post the failure notification: {err:#}");
+                }
+            }
+        }
+
         // Protocol handshake states; noise for our purposes.
         _ => {}
     }
+}
 
-    // Silences the unused warning on `TransferKind` while only inbound is
-    // implemented; Phase 3 branches on it.
-    debug_assert!(matches!(
-        kind,
-        TransferKind::Inbound | TransferKind::Outbound
-    ));
+/// A short phrase for what is being sent, for the consent prompt.
+///
+/// Reads the *kind* rather than the payload, because at consent time the
+/// payload has not arrived yet — only its description has.
+fn describe_payload(metadata: &rqs_lib::hdl::info::TransferMetadata) -> String {
+    use rqs_lib::hdl::info::TransferPayloadKind;
+
+    match metadata.payload_kind {
+        TransferPayloadKind::Text => "some text".to_owned(),
+        TransferPayloadKind::Url => "a link".to_owned(),
+        TransferPayloadKind::WiFi => "Wi-Fi details".to_owned(),
+        // The count is not in the metadata at consent time, so this stays
+        // vague on purpose rather than guessing at "1 file".
+        TransferPayloadKind::Files => "files".to_owned(),
+    }
+}
+
+/// The final component of a path `rqs_lib` reported, for display.
+fn file_name(path: &str) -> String {
+    std::path::Path::new(path)
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| path.to_owned())
 }
 
 /// Sends a consent decision back to the transfer handler waiting on it.
-fn send_action(
-    actions: &tokio::sync::broadcast::Sender<ChannelMessage>,
-    id: &str,
-    action: TransferAction,
-) {
+fn send_action(actions: &Sender<ChannelMessage>, id: &str, action: TransferAction) {
     let message = ChannelMessage {
         id: id.to_owned(),
         msg: Message::Lib { action },
     };
     // Fails only when nothing is subscribed. The transfer handler subscribes
-    // for the life of the transfer, so this means the transfer is already gone.
+    // for the life of the transfer, so this means the transfer is already gone
+    // — the sender hung up, or it timed out on their side.
     if actions.send(message).is_err() {
         tracing::warn!(%id, "no transfer left to receive the decision");
     }
 }
 
-/// Resolves the directory received files are written to.
-///
-/// Prefers `QSD_DOWNLOAD_DIR`, then the XDG download directory, then
-/// `$HOME/Downloads` — matching PLAN.md's `download_dir` default. The directory
-/// is created if missing: `rqs_lib` writes into it without checking, so a fresh
-/// machine without `~/Downloads` would otherwise fail mid-transfer.
-fn download_dir() -> Result<PathBuf> {
-    let dir = match std::env::var_os("QSD_DOWNLOAD_DIR") {
-        Some(raw) => PathBuf::from(raw),
-        None => dirs::download_dir()
-            .or_else(|| dirs::home_dir().map(|home| home.join("Downloads")))
-            .context("could not determine a download directory; set QSD_DOWNLOAD_DIR")?,
-    };
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-    std::fs::create_dir_all(&dir)
-        .with_context(|| format!("creating the download directory {}", dir.display()))?;
-
-    Ok(dir)
+    #[test]
+    fn file_names_are_reduced_to_their_last_component() {
+        assert_eq!(file_name("~/Downloads/photo.jpg"), "photo.jpg");
+        assert_eq!(file_name("photo.jpg"), "photo.jpg");
+        // Not a usable name, but better echoed back than turned into "".
+        assert_eq!(file_name("/"), "/");
+        assert_eq!(file_name(""), "");
+    }
 }

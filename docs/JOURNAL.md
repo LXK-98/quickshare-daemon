@@ -3,6 +3,50 @@
 Per-session record: what was done, what is verified, what broke, what is next.
 Newest first.
 
+## 2026-09-30 (later) — Config and notifications, verified for real
+
+**Done.**
+
+- `src/config.rs` — the `config.toml` from PLAN.md: serde + toml, defaults on
+  first run with a commented header, `deny_unknown_fields` so a typo is a
+  startup error rather than a setting that silently does not apply, validation
+  of the values that would otherwise fail somewhere less obvious, and
+  `needs_service_restart` stating which keys need the service restarted (the
+  SIGHUP path in Phase 2 consumes it).
+- `src/notify.rs` — `org.freedesktop.Notifications` over `zbus`: the consent
+  prompt with Accept/Decline buttons, the timeout, completion and failure
+  notifications, and `format_bytes`.
+- `src/main.rs` rewritten to use both. Consent prompts are spawned off the
+  event loop (D-008); auto-accept from config skips the prompt but still posts
+  a notification; text, URL and Wi-Fi payloads each get their own completion
+  message; failures are announced only for transfers that had been accepted.
+- Decisions D-006 (raw notification spec over the XDG portal), D-007 (`zbus`
+  on the tokio reactor, not async-io), D-008 (what gets spawned and why).
+
+**Verified — against the live session bus, no stub involved.** `src/notify.rs`
+was compiled directly into a test harness and run against GNOME Shell 50.4:
+
+- `GetCapabilities` → `actions`, `body`, `body-markup`, `icon-static`,
+  `persistence`, `sound`. So `supports_actions()` is true here.
+- `Notify` returns a server id; `CloseNotification` works.
+- A consent prompt nobody answers returns `TimedOut` after exactly its timeout
+  and closes itself.
+- A prompt answered by a human resolved in 8.8 s. It returned `Decline`, which
+  is correct for both the Decline button and a swipe-away, and logging was off
+  in that run, so which of the two happened is unknown.
+
+**Also verified, via the stub:** `cargo check --all-targets` and
+`cargo clippy --all-targets` clean, 14/14 tests passing across all four
+modules.
+
+`format_bytes` had a bug the tests caught: the unit table stopped at TB, so
+`u64::MAX` formatted as "18446744 TB". Extended to PB and EB.
+
+**Still blocked.** `protoc`. Nothing above involves `rqs_lib`, which is why it
+could be verified at all.
+
+---
+
 ## 2026-09-30 — Project bootstrap, blocked on `protoc`
 
 **Done.**

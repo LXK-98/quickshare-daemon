@@ -135,15 +135,26 @@ daemon's footprint.
 ### Phase 1 — Receive-only MVP (~1.5–2 days)
 
 - [x] Cargo project, GPL-3.0 license, README with credits
-- [ ] Config loading with defaults (`serde` + `toml`)
-- [ ] Start `rqs_lib::RQS` with name/visibility/port from config
-- [ ] Handle inbound transfer events: request → notification → accept/deny
+- [x] Config loading with defaults (`serde` + `toml`) — unit-tested
+- [ ] Start `rqs_lib::RQS` with name/visibility/port from config — **written,
+      never executed.** Type-checked only against a stub of `rqs_lib`; the real
+      crate cannot be built until `protoc` is installed
+- [ ] Handle inbound transfer events: request → notification → accept/deny —
+      **half verified.** The notification half is confirmed against live GNOME
+      Shell 50.4 (prompt, buttons, timeout, close); the `rqs_lib` half is
+      unexecuted, as above
 - [ ] Save files to `download_dir`; text/URL payloads shown in a notification
-      (with an "Open"/"Copy" action)
-- [ ] Completion/failure notifications
+      (with an "Open"/"Copy" action) — text, URL and Wi-Fi payloads are shown;
+      **the "Open"/"Copy" actions are not implemented.** Open needs a scheme
+      allowlist before handing a remote-supplied URL to `xdg-open`, and Copy
+      needs a Wayland clipboard path, which a daemon with no window does not
+      have for free. Deliberately deferred, not forgotten
+- [ ] Completion/failure notifications — written, not exercised by a real
+      transfer
 - [x] systemd user unit (`quickshare-daemon.service`) — written, not yet
       installed or tested
-- [ ] **Checkpoint:** measure idle RSS/PSS, test with an Android phone
+- [ ] **Checkpoint:** measure idle RSS/PSS, test with an Android phone —
+      blocked on `protoc`
 
 ### Phase 2 — Robustness (~0.5–1 day)
 

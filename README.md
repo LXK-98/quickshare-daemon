@@ -37,8 +37,22 @@ cargo build --release
 ## Configuration
 
 `$XDG_CONFIG_HOME/quickshare-daemon/config.toml`, written with defaults on
-first run. Not implemented yet; until it is, the daemon reads a few environment
-variables instead, documented at the top of [src/main.rs](src/main.rs).
+first run:
+
+```toml
+device_name = "dell"          # shown on other devices; defaults to the hostname
+visible = true                # discoverable by everyone nearby
+download_dir = "/home/you/Downloads"
+# port = 45000                # omit for a random port
+accept_timeout_secs = 60      # unanswered requests are declined after this
+auto_accept_from = []         # sender names that skip the prompt
+```
+
+Reload with `systemctl --user reload quickshare-daemon`. An unknown key is a
+startup error rather than a setting that silently does nothing.
+
+`auto_accept_from` matches the name a sender advertises for itself, which
+nothing verifies. It is a convenience, not an authorisation check.
 
 ## Credits and license
 

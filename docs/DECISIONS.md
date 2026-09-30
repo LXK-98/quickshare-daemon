@@ -167,3 +167,78 @@ points and will need `&mut RQS` for `discovery()`/`change_visibility()`. Prefer
 passing commands into the existing loop over a channel to sharing the object —
 the loop stays the single owner, and the single-threaded runtime means a channel
 costs nothing.
+
+---
+
+## D-006 — Raw `org.freedesktop.Notifications`, not the XDG portal
+
+**Date:** 2026-09-30
+
+**Context.** Packet sends notifications through `ashpd`, the XDG portal client.
+PLAN.md specifies the raw spec instead. Both work; the reasons for the raw spec
+turn out to be stronger than the plan states.
+
+**Decision.** Talk to `org.freedesktop.Notifications` directly over the session
+bus, via `zbus`.
+
+- The portal exists to give *sandboxed* applications a mediated path to the
+  session. We are deliberately not sandboxed — avoiding Flatpak is a stated goal
+  — so the portal adds a hop and a dependency to solve a problem we do not have.
+- The raw interface gives us `ActionInvoked` and `NotificationClosed` as
+  signals. Buttons that we can actually wait on are the whole user interface;
+  anything that obscured those signals would be disqualifying.
+- `ashpd` would pull in either `async-io` or a GTK backend. We want neither.
+
+**Verified on 2026-09-30** against GNOME Shell 50.4: `GetCapabilities` returns
+`actions`, `body`, `body-markup`, `icon-static`, `persistence`, `sound`.
+`Notify` returns a server id, `CloseNotification` works, and a consent prompt
+left unanswered returns `TimedOut` after exactly its timeout and closes itself.
+
+**Consequence.** `actions` is optional in the spec, and a server without it
+leaves the daemon unable to receive anything interactively. Rather than fail at
+startup, [`Notifier::supports_actions`] is checked once and logged as an error
+pointing at `auto_accept_from`, which still works.
+
+---
+
+## D-007 — `zbus` with `default-features = false, features = ["tokio"]`
+
+**Date:** 2026-09-30
+
+**Context.** `zbus` defaults to the `async-io` reactor. Taking that default in
+a tokio program means two executors in one process: async-io spawns its own
+polling thread, and every thread costs a stack and potentially a glibc malloc
+arena — the exact mechanism behind Packet's overhead that D-003 is about.
+
+**Decision.** `zbus = { version = "5.7", default-features = false, features = ["tokio"] }`.
+
+Silently costly: nothing fails if the feature is forgotten, the daemon simply
+grows a second event loop. Recorded here because the failure mode is invisible
+and a future `cargo add zbus` would reintroduce it.
+
+---
+
+## D-008 — The consent prompt is spawned, the rest of the handling is not
+
+**Date:** 2026-09-30
+
+**Context.** A consent prompt waits up to `accept_timeout_secs` (default 60).
+On a `current_thread` runtime, awaiting that inline in the event loop would
+stall every other event for the duration — including a second sender's request,
+and including progress on a transfer already running.
+
+**Decision.** Spawn a task per consent prompt; handle everything else inline.
+
+Completion and failure notifications are D-Bus method calls that return in
+milliseconds, so they cost the loop nothing worth restructuring for. Only the
+part that waits on a human is moved off it.
+
+This works because the reply path is a `broadcast::Sender`, which is cloneable
+and `Send`, and `rqs_lib` expects consent as an ordinary channel send with no
+ordering guarantee relative to other events. Each transfer handler filters by
+id, so a late or out-of-order decision reaches the right place or nothing at
+all.
+
+**Rejected.** *Awaiting the prompt inline.* Simpler, and wrong the first time
+two devices send at once — which is exactly the case a shared family machine
+hits.

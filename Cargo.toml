@@ -10,6 +10,8 @@ rust-version = "1.85"
 [dependencies]
 anyhow = "1.0"
 dirs = "6.0"
+# For the notification signal streams; zbus returns them as `Stream`s.
+futures-util = { version = "0.3", default-features = false }
 
 # The Quick Share protocol implementation. No stable API and marked
 # `experimental` upstream, so the revision is pinned deliberately; see
@@ -31,10 +33,17 @@ tokio = { version = "1.45", features = [
     "io-util",
     "signal",
 ] }
+serde = { version = "1.0", features = ["derive"] }
+toml = "0.9"
 tracing = "0.1"
 # Default features include `tracing-log`, which is what routes rqs_lib's `log`
 # records into our subscriber. Do not disable it; see docs/RQS_LIB_NOTES.md.
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# `default-features = false` matters here: zbus defaults to the async-io
+# reactor, which would run a second event loop alongside tokio's. The `tokio`
+# feature makes it use ours instead. See docs/DECISIONS.md#d-006.
+zbus = { version = "5.7", default-features = false, features = ["tokio"] }
 
 [profile.release]
 lto = true
