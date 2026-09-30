@@ -242,3 +242,44 @@ all.
 **Rejected.** *Awaiting the prompt inline.* Simpler, and wrong the first time
 two devices send at once — which is exactly the case a shared family machine
 hits.
+
+---
+
+## D-009 — NetworkManager's `StateChanged`, debounced, with the restart deferred
+
+**Date:** 2026-09-30
+
+**Context.** `rqs_lib` binds its listener and starts mDNS once, at `run()`.
+Neither survives an interface going away and returning with a new address: the
+daemon stays up, logs nothing, and is silently invisible to every phone on the
+network. Packet handles this through GIO's `NetworkMonitor`; we have no GIO, so
+PLAN.md specifies NetworkManager's D-Bus interface.
+
+**Decision.** Watch `org.freedesktop.NetworkManager`'s `StateChanged`, react
+only to a down → up edge, debounce 3 s, and defer the restart while transfers
+are in flight.
+
+- **`ConnectedLocal` (50) counts as up**, not just `ConnectedGlobal` (70). Quick
+  Share is mDNS plus a direct TCP connection and never needs the internet.
+  Requiring global connectivity would disable the daemon on exactly the
+  isolated networks it is most useful on.
+- **3 s debounce**, the value Packet arrived at, because NetworkManager reports
+  several states while a connection comes up. Without it the service restarts
+  into a network that is still settling.
+- **Edge, not level:** a site → global transition means the link never dropped
+  and the listener is still valid.
+- **Deferred, not refused.** A restart while a transfer is running would drop
+  it. The request is held in a flag and run when `active` next empties, which
+  is the moment the last transfer ends. Packet retries on a timer instead; a
+  flag needs no interval guess and cannot starve.
+
+**Verified 2026-09-30** against the live system bus, read-only: the proxy
+connects, the current state reads as `ConnectedGlobal`, and a stable link
+produces no spurious reconnect over a 5 s window. The down → up path and the
+debounce are **not** verified — that needs the network actually taken down.
+
+**Gotcha worth keeping.** zbus derives `receive_state_changed` from both the
+`State` property and the `StateChanged` signal, which collide. The signal is
+bound as `nm_state_changed` with `#[zbus(signal, name = "StateChanged")]`. The
+generated *stream type* is still named after the D-Bus signal
+(`StateChangedStream`), not after the Rust method.

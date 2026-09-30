@@ -158,11 +158,20 @@ daemon's footprint.
 
 ### Phase 2 — Robustness (~0.5–1 day)
 
-- [ ] Restart RQS on network changes (NetworkManager D-Bus), deferred during
-      transfers
-- [ ] Accept timeout, cancelled transfers, sender disconnects mid-transfer
-- [ ] Filename collisions in `download_dir`
-- [ ] `SIGHUP` config reload
+- [x] Restart RQS on network changes (NetworkManager D-Bus), deferred during
+      transfers — written; the NetworkManager side is verified against the live
+      system bus, the restart itself is unexecuted (needs `protoc`). The down →
+      up transition and the 3 s debounce are untested, since testing them means
+      taking the network down
+- [~] Accept timeout, cancelled transfers, sender disconnects mid-transfer —
+      the accept timeout is done and verified end to end against GNOME Shell.
+      Cancellations and mid-transfer disconnects are handled as far as
+      notifications go, but not exercised
+- [ ] Filename collisions in `download_dir` — not started; check first whether
+      `rqs_lib` already handles this, since it does the writing
+- [x] `SIGHUP` config reload — written, unexecuted. Reloads, applies
+      `download_dir` in place, and restarts the service only for the three keys
+      that need it
 
 ### Phase 3 — Sending (~1–2 days)
 

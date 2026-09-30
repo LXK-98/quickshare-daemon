@@ -3,6 +3,35 @@
 Per-session record: what was done, what is verified, what broke, what is next.
 Newest first.
 
+## 2026-09-30 (later still) — Network watcher and SIGHUP reload
+
+**Done.** Both of Phase 2's items that do not depend on `rqs_lib` being
+buildable.
+
+- `src/network.rs` — NetworkManager `StateChanged` watcher: state mapping,
+  down → up edge detection, 3 s debounce, cancel-safe across `select!`. D-009.
+- `src/main.rs` — the reconnect branch and a SIGHUP branch that reloads the
+  config, applies `download_dir` in place through `rqs_lib`'s setter, and
+  restarts the service only when `needs_service_restart` says so.
+- Restarts are **deferred** while transfers are in flight and run the moment
+  the last one ends, via a `restart_pending` flag.
+
+**Verified.** `src/network.rs` run against the live system bus, read-only:
+connects, reads `ConnectedGlobal`, and reports no spurious reconnect on a
+stable link over 5 s. Clippy clean, 16/16 tests.
+
+**Not verified.** The down → up transition and the debounce, which would mean
+taking the network down — not something to do to a working machine unasked.
+The SIGHUP path cannot run at all until the daemon can start.
+
+**Two bugs caught while writing this, both mine.** `settle()` had a
+non-exhaustive inner match and lost a reconnect if `select!` dropped the future
+mid-debounce (fixed with `pending_reconnect`). And the first cut of
+`restart_service` *refused* a restart during a transfer rather than deferring
+it, which is weaker than what PLAN.md asks for; rewritten to actually defer.
+
+---
+
 ## 2026-09-30 (later) — Config and notifications, verified for real
 
 **Done.**

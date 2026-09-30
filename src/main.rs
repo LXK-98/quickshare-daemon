@@ -29,6 +29,7 @@
 
 mod config;
 mod meminfo;
+mod network;
 mod notify;
 
 use std::collections::HashMap;
@@ -43,6 +44,7 @@ use tokio::sync::broadcast::{Sender, error::RecvError};
 
 use crate::config::Config;
 use crate::meminfo::MemSnapshot;
+use crate::network::NetworkMonitor;
 use crate::notify::{Consent, Notifier, Urgency, format_bytes};
 
 fn main() -> Result<()> {
@@ -163,6 +165,9 @@ async fn run() -> Result<()> {
     );
 
     let mut active: HashMap<String, ActiveTransfer> = HashMap::new();
+    // A restart asked for while transfers were in flight, run as soon as the
+    // last one ends.
+    let mut restart_pending = false;
 
     // The first measurement, taken after mDNS and BLE have settled, is the
     // number PLAN.md's target is about. Recorded in docs/MEASUREMENTS.md.
@@ -172,12 +177,43 @@ async fn run() -> Result<()> {
 
     let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
         .context("installing the SIGTERM handler")?;
+    let mut sighup = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup())
+        .context("installing the SIGHUP handler")?;
+
+    // Not fatal if NetworkManager is absent: plenty of systems use systemd-networkd
+    // or nothing at all, and the daemon works fine until the network changes
+    // under it.
+    let mut network = match NetworkMonitor::new().await {
+        Ok(monitor) => {
+            tracing::debug!(state = ?monitor.state(), "watching NetworkManager");
+            Some(monitor)
+        }
+        Err(err) => {
+            tracing::warn!(
+                "not watching for network changes: {err:#}. The service will not be \
+                 restarted when the network reconnects; restart the daemon by hand if \
+                 it stops being discoverable"
+            );
+            None
+        }
+    };
+
+    // Held across a deferred restart. `rqs_lib` bakes these in at start time,
+    // so a restart must use the same values the running service was given.
+    let mut config = config;
 
     loop {
         tokio::select! {
             event = events.recv() => match event {
                 Ok(message) => {
                     handle_event(&message, &config, &notifier, &actions, &mut active).await;
+
+                    // The deferred restart from a reconnect or a SIGHUP that
+                    // arrived mid-transfer. `active` empties only here, so this
+                    // is the one place the restart can become due.
+                    if restart_pending && active.is_empty() {
+                        restart_pending = !restart_service(&mut rqs, &config, &active).await;
+                    }
                 }
                 // The channel holds 50 messages. Progress updates during a
                 // large transfer are the plausible way to overrun it, and
@@ -206,6 +242,37 @@ async fn run() -> Result<()> {
             _ = measure.tick() => {
                 if let Ok(snap) = MemSnapshot::read() {
                     tracing::debug!(%snap, "footprint");
+                }
+            }
+            // `wait_for_reconnect` never resolves when there is no monitor,
+            // so this branch simply never fires in that case.
+            _ = async { match network.as_mut() {
+                Some(monitor) => monitor.wait_for_reconnect().await,
+                None => std::future::pending().await,
+            } } => {
+                restart_pending = !restart_service(&mut rqs, &config, &active).await;
+            }
+            _ = sighup.recv() => {
+                match Config::load_or_create() {
+                    Ok((reloaded, _)) => {
+                        let restart_needed = reloaded.needs_service_restart(&config);
+                        if let Err(err) = reloaded.ensure_download_dir() {
+                            tracing::warn!("reloaded config's download_dir is unusable: {err:#}");
+                        }
+                        // Applied without a restart; rqs_lib reads this per
+                        // transfer through a global set by the setter.
+                        rqs.set_download_path(Some(reloaded.download_dir.clone()));
+                        config = reloaded;
+                        tracing::info!(restart_needed, "reloaded configuration");
+
+                        if restart_needed {
+                            restart_pending =
+                                !restart_service(&mut rqs, &config, &active).await;
+                        }
+                    }
+                    Err(err) => {
+                        tracing::error!("keeping the running configuration: {err:#}");
+                    }
                 }
             }
             _ = tokio::signal::ctrl_c() => {
@@ -237,6 +304,53 @@ fn measure_interval() -> Duration {
             .and_then(|v| v.parse().ok())
             .unwrap_or(60),
     )
+}
+
+/// Stops and restarts the Quick Share service, unless a transfer is running.
+///
+/// Called on reconnect and after a config change that `rqs_lib` only reads at
+/// start time. Returns `false` if it declined because transfers are in flight,
+/// which tells the caller to remember the request and come back once the last
+/// one ends — restarting mid-transfer would drop a transfer the user is
+/// watching.
+///
+/// Deferring on a flag rather than retrying on a timer (which is what Packet
+/// does) means the restart happens the moment the last transfer ends, with no
+/// interval to guess at and no possibility of a retry loop starving.
+#[must_use = "a declined restart has to be retried once the transfers end"]
+async fn restart_service(
+    rqs: &mut RQS,
+    config: &Config,
+    active: &HashMap<String, ActiveTransfer>,
+) -> bool {
+    if !active.is_empty() {
+        tracing::info!(
+            transfers = active.len(),
+            "deferring the Quick Share service restart until transfers finish"
+        );
+        return false;
+    }
+
+    tracing::info!("restarting the Quick Share service");
+    rqs.stop().await;
+
+    // `rqs_lib` reuses the port it last bound, even one it chose at random, so
+    // a restart keeps the same port whether or not the config fixes one.
+    if let Err(err) = rqs.run().await {
+        // The daemon is now running with no service. Nothing here can fix
+        // that, but the next reconnect or SIGHUP is the retry.
+        tracing::error!("could not restart the Quick Share service: {err:#}");
+        return true;
+    }
+
+    rqs.change_visibility(if config.visible {
+        Visibility::Visible
+    } else {
+        Visibility::Invisible
+    });
+
+    tracing::info!(port = ?rqs.port_number, "Quick Share service restarted");
+    true
 }
 
 /// Reacts to one message from `rqs_lib`.
