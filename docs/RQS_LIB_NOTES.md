@@ -232,11 +232,52 @@ An over-long coordinate (33 bytes, from a sign byte) is truncated correctly. A
 **short** one is appended as-is, so the buffer ends up 63 or 64 bytes where
 `EncodedPoint::from_bytes` requires exactly 65 — and fails.
 
-Coordinates arrive as Java `BigInteger.toByteArray()` output, which is signed
-two's complement: it *prepends* 0x00 when the high bit is set (half the time,
-handled) and *strips* leading zeros otherwise. A P-256 coordinate has a leading
-zero byte with probability about 1/256, so roughly **1 connection in 128** fails
-this way, on either coordinate.
+### Why a coordinate is ever short
+
+A P-256 public key *is a point* on the curve: a pair (x, y) of 256-bit field
+elements, 32 bytes each. The fixed-width SEC1 form is `0x04 || x(32) || y(32)` =
+65 bytes, but `securemessage.proto` carries x and y as **variable-length**
+integers and says so explicitly:
+
+```proto
+// x and y are encoded in big-endian two's complement (slightly wasteful)
+required bytes x = 1;
+required bytes y = 2;
+```
+
+Two's complement means the length varies with the value: 0x00 is prepended when
+the top bit is set (giving 33 bytes), and leading zeros are stripped otherwise
+(giving 31 or fewer). Short coordinates are therefore **spec-sanctioned**, and a
+conforming decoder has to left-pad. Variable-length input into a fixed-width
+format is the whole bug.
+
+### Measured rate
+
+Confirmed empirically on 2026-10-01 by replicating `encode_point` and the rebuild
+logic against 500,000 real P-256 keys:
+
+| | count | share |
+|---|---|---|
+| short x | 952 | 0.190% |
+| short y | 959 | 0.192% |
+| **either short** | **1910** | **0.382%** |
+| at least one 33-byte coordinate | 375006 | 75.001% |
+| rqs_lib decode failures | 1910 | 0.382% |
+
+So **1 connection in 262**, and the causal link is exact: the failure count
+equals the short-coordinate count, with no other failure mode appearing. The
+reproduction emits the identical error string, and left-padding yields 65 bytes
+that decode to a valid point.
+
+The 75% figure is a useful check on the model — it is exactly 1−(1/2)², which is
+what two's complement predicts for "at least one of two coordinates has its top
+bit set".
+
+**An earlier note here said 1 in 128, reasoning from 1/256 per coordinate. That
+was wrong.** A short result requires the value below 2^247, not 2^248: a 31-byte
+value whose top byte is ≥ 0x80 gets a 0x00 prepended and lands back at exactly
+32 bytes. So it is 1/512 per coordinate, and the measurement (0.190%) matches
+that rather than the estimate.
 
 **Consequences for us.**
 
@@ -247,6 +288,9 @@ this way, on either coordinate.
 - A client cannot see the cause: the failure surfaces as `TransferState::
   Disconnected` with no error text. Our CLI infers it from a PIN never having
   appeared, since the PIN is derived after this decode.
+
+The reproduction is kept at `docs/ec-point-bug-repro.rs` — a standalone program
+with no dependency on this project, so it can be handed to upstream as-is.
 
 **The fix is three lines** — left-pad a short coordinate to 32 bytes instead of
 appending it raw. PLAN.md's standing guidance is to fork `rqs_lib` rather than

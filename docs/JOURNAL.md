@@ -23,13 +23,32 @@ computed, logged by `rqs_lib` at INFO, and never surfaced, while the user watche
 a terminal that gave no sign it was waiting for them. Result: `consent denied:
 TimedOut`. The PIN now prints from whatever event first carries it.
 
-**Upstream bug found: `elliptic curve point encoding error`.** A send failed
-during the handshake, and the phone said *"Dateien können nicht übertragen
-werden"*. Both `inbound.rs` and `outbound.rs` rebuild the peer's public key
-without left-padding a short coordinate, so roughly 1 connection in 128 produces
-a 64-byte buffer where 65 is required. Intermittent, unrelated to file type, and
-**it affects receiving too**. Full analysis in RQS_LIB_NOTES.md; the fix is three
-lines in a fork, not yet taken.
+**Upstream bug found and then confirmed empirically:
+`elliptic curve point encoding error`.** A send failed during the handshake, and
+the phone said *"Dateien können nicht übertragen werden"*. Both `inbound.rs` and
+`outbound.rs` rebuild the peer's public key without left-padding a short
+coordinate, producing 64 bytes where SEC1 requires 65.
+
+Confirmed rather than assumed: `docs/ec-point-bug-repro.rs` replicates
+`encode_point` and the rebuild logic against 500,000 real P-256 keys. It emits
+the identical error string, and the failure count equals the short-coordinate
+count exactly — 1910 of 500,000 — with no other failure mode. Left-padding
+yields 65 bytes that decode to a valid point.
+
+**The measurement corrected my own estimate.** I had said 1 in 128, reasoning
+from 1/256 per coordinate. It is **1 in 262**: a short result needs the value
+below 2^247, not 2^248, because a 31-byte value with its top bit set gets a 0x00
+prepended and lands back at exactly 32 bytes. The measured 0.190% per coordinate
+matches 1/512, not 1/256. A separate figure in the same run — 75.001% of keys
+having at least one 33-byte coordinate, against a predicted 1−(1/2)² — confirms
+the two's-complement model the whole analysis rests on.
+
+Intermittent, unrelated to file type, and **it affects receiving too**. Full
+analysis in RQS_LIB_NOTES.md; the fix is three lines in a fork, not yet taken.
+
+One honest caveat: at 1 in 262 we were unlucky to hit this within a handful of
+attempts (~1.5%). Consistent with chance, but a single observation cannot rule
+out something else raising the real-world rate.
 
 **Error messages corrected.** A failed handshake was being reported as
 "{device} never accepted the transfer", which blames the user for something they

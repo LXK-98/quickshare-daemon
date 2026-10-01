@@ -401,7 +401,7 @@ async fn follow_transfer(
                     "the connection to {} failed during the encrypted handshake, before it \
                      could ask anyone to accept anything. Look for an rqs_lib ERROR line \
                      above. If it mentions \"elliptic curve point encoding\", that is a known \
-                     intermittent bug affecting roughly 1 in 128 connections — retrying \
+                     intermittent bug affecting roughly 1 connection in 262 — retrying \
                      usually works. See docs/RQS_LIB_NOTES.md.",
                     device.display_name()
                 ),
