@@ -145,7 +145,23 @@ that shape any device picker built on it:
    stable per-device identifier anywhere in the API. Anything keyed on `id`
    treats the same phone as a new device after it re-advertises, so a picker
    needs to deduplicate by address instead.
-3. **Discovery probes before reporting.** It only emits an `EndpointInfo` if
+3. **A removal is signalled by `present: None`, not `Some(false)`.** The
+   `ServiceRemoved` branch sends `EndpointInfo { id, ..Default::default() }` —
+   so the event carries the id and *nothing else*: no name, no ip, no port, and
+   `present: None` because that is `Option`'s default. `Some(false)` is never
+   sent anywhere in the library.
+
+   Getting this backwards is costly and quiet: treating `None` as "still
+   present" applies the empty removal as an *update*, which wipes the device's
+   name and leaves `Unknown device` in the picker while the device is still
+   listed. Observed against a Pixel 6a on 2026-10-01.
+
+   Related: `ServiceRemoved` arrives readily while a device is still present and
+   reachable — the phone's sheet was open throughout — so a picker should not act
+   on it instantly. The comment in the source says "only remove if it has not
+   been seen in the last cleanup_threshold", but no such threshold is
+   implemented.
+4. **Discovery probes before reporting.** It only emits an `EndpointInfo` if
    `TcpStream::connect(ip:port)` succeeds at that moment. Devices are therefore
    always resolved and reachable when reported — but a device that is merely
    advertising, without accepting connections, never appears at all.

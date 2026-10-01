@@ -38,6 +38,16 @@ pub const IDLE_GRACE: Duration = Duration::from_secs(60);
 /// nothing — so entries also expire on their own.
 const DEVICE_TTL: Duration = Duration::from_secs(120);
 
+/// How long a withdrawn device stays listed before it is really dropped.
+///
+/// Observed 2026-10-01 against a Pixel 6a: `ServiceRemoved` arrived seconds
+/// after `ServiceResolved` while the phone's Quick Share sheet was still open
+/// and it was still reachable. mDNS churn like that is normal, and acting on it
+/// instantly would make a device blink out of the picker exactly as the user
+/// reached for it. A short grace absorbs the churn; a device that is genuinely
+/// gone still disappears quickly.
+const REMOVAL_GRACE: Duration = Duration::from_secs(10);
+
 /// A device we could send to.
 #[derive(Debug, Clone)]
 pub struct Device {
@@ -54,6 +64,10 @@ pub struct Device {
     pub ip: Option<String>,
     /// When this entry was last refreshed by a discovery event.
     pub last_seen: Instant,
+    /// When mDNS said this device went away, if it has.
+    ///
+    /// Cleared the moment it is announced again. See [`REMOVAL_GRACE`].
+    pub withdrawn_at: Option<Instant>,
 }
 
 impl Device {
@@ -90,12 +104,27 @@ impl Registry {
     /// emitting a D-Bus signal for a refresh that changed nothing. mDNS
     /// re-announces the same device repeatedly, so most events change nothing.
     pub fn apply(&mut self, endpoint: EndpointInfo) -> bool {
-        // `present: Some(false)` is a removal. `None` is treated as presence:
-        // every path in rqs_lib that resolves a service sets `Some(true)`, and
-        // guessing "gone" from a missing flag would make devices vanish from a
-        // picker while they are still there.
-        if endpoint.present == Some(false) {
-            return self.devices.remove(&endpoint.id).is_some();
+        // A removal is anything that is not an explicit `Some(true)`.
+        //
+        // rqs_lib sends exactly two kinds of event: `ServiceResolved` builds an
+        // `EndpointInfo` with `present: Some(true)` and every field filled in,
+        // and `ServiceRemoved` sends `EndpointInfo { id, ..Default::default() }`
+        // — so a removal carries `present: None` and *no other data*.
+        // `Some(false)` is never sent at all.
+        //
+        // Reading `None` as "still here" was a bug: the empty removal event was
+        // applied as an update and wiped the device's name, leaving "Unknown
+        // device" in the picker. See docs/RQS_LIB_NOTES.md.
+        if endpoint.present != Some(true) {
+            return match self.devices.get_mut(&endpoint.id) {
+                // Withdrawn, not deleted: see REMOVAL_GRACE.
+                Some(device) if device.withdrawn_at.is_none() => {
+                    device.withdrawn_at = Some(Instant::now());
+                    false
+                }
+                // Already withdrawn, or never known.
+                _ => false,
+            };
         }
 
         let addr = match (&endpoint.ip, &endpoint.port) {
@@ -116,10 +145,19 @@ impl Registry {
         match self.devices.get_mut(&endpoint.id) {
             Some(existing) => {
                 existing.last_seen = Instant::now();
+                // Announced again, so any pending withdrawal is void.
+                let was_withdrawn = existing.withdrawn_at.take().is_some();
+                // Never let an absent name replace a known one. Only the
+                // resolve path reaches here, so a name should always be present
+                // — but losing a device's name is the one failure that is
+                // visible to the user, so it is guarded explicitly.
+                let name_changed = endpoint.name.is_some() && existing.name != endpoint.name;
                 let changed =
-                    existing.name != endpoint.name || (addr.is_some() && existing.addr != addr);
+                    was_withdrawn || name_changed || (addr.is_some() && existing.addr != addr);
                 if changed {
-                    existing.name = endpoint.name;
+                    if name_changed {
+                        existing.name = endpoint.name;
+                    }
                     // Keep a known address rather than overwrite it with None:
                     // a later unresolved announcement must not make a reachable
                     // device unreachable.
@@ -139,6 +177,7 @@ impl Registry {
                         addr,
                         ip: endpoint.ip,
                         last_seen: Instant::now(),
+                        withdrawn_at: None,
                     },
                 );
                 true
@@ -146,22 +185,40 @@ impl Registry {
         }
     }
 
-    /// Drops devices not seen within [`DEVICE_TTL`].
+    /// Drops devices that have aged out or whose withdrawal grace has passed.
     ///
     /// Returns whether anything was dropped.
     pub fn expire(&mut self) -> bool {
         let before = self.devices.len();
-        self.devices
-            .retain(|_, device| device.last_seen.elapsed() < DEVICE_TTL);
+        self.devices.retain(|_, device| {
+            let aged_out = device.last_seen.elapsed() >= DEVICE_TTL;
+            let withdrawn = device
+                .withdrawn_at
+                .is_some_and(|at| at.elapsed() >= REMOVAL_GRACE);
+            !aged_out && !withdrawn
+        });
         self.devices.len() != before
     }
 
-    /// Every known device, newest first.
+    /// Every currently-listable device, newest first.
     ///
     /// Most-recently-seen first because that is the most likely intended
     /// recipient — the phone the user just woke up to send something from.
+    ///
+    /// Devices withdrawn longer ago than [`REMOVAL_GRACE`] are left out even if
+    /// [`Registry::expire`] has not run, so a caller that never expires (the
+    /// one-shot CLI) still does not show a device that has gone.
     pub fn list(&self) -> Vec<Device> {
-        let mut devices: Vec<Device> = self.devices.values().cloned().collect();
+        let mut devices: Vec<Device> = self
+            .devices
+            .values()
+            .filter(|device| {
+                device
+                    .withdrawn_at
+                    .is_none_or(|at| at.elapsed() < REMOVAL_GRACE)
+            })
+            .cloned()
+            .collect();
         devices.sort_by(|a, b| {
             b.last_seen
                 .cmp(&a.last_seen)
@@ -314,28 +371,90 @@ mod tests {
     }
 
     #[test]
-    fn removal_drops_the_device() {
+    fn an_explicit_absence_also_withdraws() {
         let mut registry = Registry::default();
         registry.apply(endpoint("a", Some("Pixel"), true));
 
+        // rqs_lib never sends Some(false) today, but anything that is not an
+        // explicit Some(true) must be treated as the device going away.
         let mut gone = endpoint("a", Some("Pixel"), true);
         gone.present = Some(false);
-        assert!(registry.apply(gone));
-        assert!(registry.list().is_empty());
+        registry.apply(gone);
+
+        assert!(registry.get("a").unwrap().withdrawn_at.is_some());
+    }
+
+    /// This test previously asserted the opposite, and passed — it encoded my
+    /// belief rather than rqs_lib's behaviour. `ServiceRemoved` sends
+    /// `EndpointInfo { id, ..Default::default() }`, so `present: None` *is* the
+    /// removal signal and `Some(false)` is never sent.
+    #[test]
+    fn a_missing_presence_flag_is_a_removal() {
+        let mut registry = Registry::default();
+        registry.apply(endpoint("a", Some("Pixel"), true));
+
+        // Exactly what rqs_lib sends on ServiceRemoved: the id and nothing else.
+        registry.apply(EndpointInfo {
+            id: "a".to_owned(),
+            ..Default::default()
+        });
+
+        // Withdrawn, so still listed during the grace period...
+        let listed = registry.list();
+        assert_eq!(listed.len(), 1);
+        // ...but the name must survive. Wiping it to "Unknown device" was the
+        // bug this test now guards.
+        assert_eq!(listed[0].display_name(), "Pixel");
+        assert!(registry.get("a").unwrap().withdrawn_at.is_some());
     }
 
     #[test]
-    fn a_missing_presence_flag_counts_as_present() {
+    fn a_withdrawn_device_is_dropped_after_the_grace_period() {
         let mut registry = Registry::default();
-        let mut unknown = endpoint("a", Some("Pixel"), true);
-        unknown.present = None;
+        registry.apply(endpoint("a", Some("Pixel"), true));
+        registry.apply(EndpointInfo {
+            id: "a".to_owned(),
+            ..Default::default()
+        });
 
-        assert!(registry.apply(unknown));
-        assert_eq!(
-            registry.list().len(),
-            1,
-            "must not vanish on a missing flag"
+        registry.devices.get_mut("a").unwrap().withdrawn_at = Some(Instant::now() - REMOVAL_GRACE);
+
+        assert!(registry.list().is_empty(), "must not list a gone device");
+        assert!(registry.expire());
+    }
+
+    #[test]
+    fn re_announcing_cancels_a_withdrawal() {
+        let mut registry = Registry::default();
+        registry.apply(endpoint("a", Some("Pixel"), true));
+        registry.apply(EndpointInfo {
+            id: "a".to_owned(),
+            ..Default::default()
+        });
+        assert!(registry.get("a").unwrap().withdrawn_at.is_some());
+
+        // The mDNS churn observed against a real phone: removed, then resolved
+        // again moments later while it never actually went away.
+        assert!(
+            registry.apply(endpoint("a", Some("Pixel"), true)),
+            "coming back is a change worth reporting"
         );
+        assert!(registry.get("a").unwrap().withdrawn_at.is_none());
+        assert_eq!(registry.list()[0].display_name(), "Pixel");
+    }
+
+    #[test]
+    fn an_empty_update_never_wipes_a_name() {
+        let mut registry = Registry::default();
+        registry.apply(endpoint("a", Some("Pixel 6a"), true));
+
+        // Belt and braces: even a present-flagged event with no name must not
+        // erase one. This is the shape that produced "Unknown device".
+        let mut nameless = endpoint("a", None, true);
+        nameless.present = Some(true);
+        registry.apply(nameless);
+
+        assert_eq!(registry.list()[0].display_name(), "Pixel 6a");
     }
 
     #[test]
