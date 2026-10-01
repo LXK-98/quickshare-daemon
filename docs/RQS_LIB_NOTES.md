@@ -128,6 +128,43 @@ the *original* one when a collision occurred — not the ` (1)` variant actually
 written. A notification naming the file can therefore name a file that is not
 the one on disk; harmless for display, wrong for anything that opens it by name.
 
+## Discovery (`MDnsDiscovery`)
+
+Browsing `_FC9F5ED42C8A._tcp.local.`. Three behaviours that are not obvious and
+that shape any device picker built on it:
+
+1. **Devices on the local machine are filtered out.** `is_not_self_ip(ip)` skips
+   any advertiser on one of this host's own addresses. So a second Quick Share
+   implementation running on the same machine — Packet, or our own daemon — is
+   invisible to our discovery. Correct (you cannot send to yourself), but it
+   means "no devices found" is the expected result when the only advertiser on
+   the LAN is local.
+2. **`EndpointInfo.id` is not a device id — it is literally `"ip:port"`.**
+   (`id: ip_port` in the resolve branch.) It therefore **changes whenever the
+   port changes**, and a phone picks a fresh port per share session. There is no
+   stable per-device identifier anywhere in the API. Anything keyed on `id`
+   treats the same phone as a new device after it re-advertises, so a picker
+   needs to deduplicate by address instead.
+3. **Discovery probes before reporting.** It only emits an `EndpointInfo` if
+   `TcpStream::connect(ip:port)` succeeds at that moment. Devices are therefore
+   always resolved and reachable when reported — but a device that is merely
+   advertising, without accepting connections, never appears at all.
+
+`SendInfo.id` takes that same `"ip:port"` string, so an id from discovery can be
+handed straight back when sending.
+
+## Sending
+
+`OutboundPayload` has exactly one variant: `Files(Vec<String>)`. **Sending text,
+a URL or Wi-Fi credentials is not supported** — those exist only on the inbound
+side. Anything presenting a "share text" option would have to fake it by writing
+a file.
+
+`SendInfo { id, name, addr, ob }` where `addr` is the `ip:port` string
+`TcpStream::connect` is called on, and `name` is what the remote device will be
+labelled as locally. Hand it to the `mpsc::Sender<SendInfo>` that `run()`
+returned.
+
 ## Logging
 
 `core_lib` does `#[macro_use] extern crate log` and logs through the **`log`

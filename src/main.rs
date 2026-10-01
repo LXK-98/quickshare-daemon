@@ -27,7 +27,9 @@
 //!
 //! - `QSD_MEASURE_SECS` — memory measurement interval (default: 60)
 
+mod cli;
 mod config;
+mod devices;
 mod meminfo;
 mod network;
 mod notify;
@@ -56,39 +58,100 @@ use crate::notify::{Consent, Notifier, Urgency, format_bytes};
 /// (`send`, `devices`) do not exist yet, and saying so beats a bare usage line
 /// that leaves someone guessing.
 const USAGE: &str = "\
-quickshare-daemon — receive files over Quick Share
+quickshare-daemon — send and receive files over Quick Share
 
-Usage: quickshare-daemon [--help | --version]
+Usage:
+  quickshare-daemon                     run the receiving daemon
+  quickshare-daemon devices [secs]      list nearby devices (default 8s)
+  quickshare-daemon send <to> <files…>  send files to a device
+  quickshare-daemon --help | --version
 
-Takes no options. Configuration lives in
+<to> is a device name or id as shown by `devices`.
+
+Configuration lives in
   $XDG_CONFIG_HOME/quickshare-daemon/config.toml
 which is written with defaults on first run.
 
 Logging goes to stderr; filter it with RUST_LOG, e.g.
   RUST_LOG=quickshare_daemon=debug,rqs_lib=debug
 
-Sending files is not implemented yet.";
+Note: the other device must have its Quick Share sheet open to be discoverable.
+`devices` and `send` currently run their own short-lived service rather than
+talking to a running daemon.";
+
+/// How long `devices` and `send` look for nearby devices by default.
+///
+/// mDNS answers trickle in over a second or two, and a phone's Quick Share
+/// sheet re-advertises periodically rather than instantly, so a short window
+/// finds nothing and looks broken.
+const DEFAULT_DISCOVERY_SECS: u64 = 8;
+
+/// What the process was asked to do.
+enum Command {
+    /// Run the receiving daemon.
+    Daemon,
+    /// List nearby devices.
+    Devices { window: Duration },
+    /// Send files to one device.
+    Send {
+        target: String,
+        files: Vec<PathBuf>,
+        window: Duration,
+    },
+    /// Print something and exit successfully.
+    Print(String),
+}
+
+/// Parses argv.
+///
+/// Hand-rolled rather than pulling in `clap`: there are three verbs and one
+/// optional number, and the binary's size is something this project measures.
+fn parse_args(args: &[String]) -> Result<Command, String> {
+    let window = Duration::from_secs(DEFAULT_DISCOVERY_SECS);
+
+    match args {
+        [] => Ok(Command::Daemon),
+        [flag] if flag == "--help" || flag == "-h" => Ok(Command::Print(USAGE.to_owned())),
+        [flag] if flag == "--version" || flag == "-V" => Ok(Command::Print(format!(
+            "{} {}",
+            env!("CARGO_PKG_NAME"),
+            env!("CARGO_PKG_VERSION")
+        ))),
+        [verb] if verb == "devices" => Ok(Command::Devices { window }),
+        [verb, secs] if verb == "devices" => match secs.parse::<u64>() {
+            Ok(secs) if secs > 0 => Ok(Command::Devices {
+                window: Duration::from_secs(secs),
+            }),
+            _ => Err(format!("not a number of seconds: {secs:?}")),
+        },
+        [verb, ..] if verb == "send" => match &args[1..] {
+            [] => Err("send needs a device and at least one file".to_owned()),
+            [_target] => Err("send needs at least one file".to_owned()),
+            [target, files @ ..] => Ok(Command::Send {
+                target: target.clone(),
+                files: files.iter().map(PathBuf::from).collect(),
+                window,
+            }),
+        },
+        [other, ..] => Err(format!("unexpected argument: {other}")),
+    }
+}
 
 fn main() -> Result<()> {
-    // Checked before anything else starts: without this, `--help` and every
-    // typo'd flag were silently ignored and the daemon bound a port anyway.
-    if let Some(argument) = std::env::args().nth(1) {
-        match argument.as_str() {
-            "--help" | "-h" => {
-                println!("{USAGE}");
-                return Ok(());
-            }
-            "--version" | "-V" => {
-                println!("{} {}", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"));
-                return Ok(());
-            }
-            other => {
-                eprintln!("unexpected argument: {other}\n\n{USAGE}");
-                // 2 is the conventional exit status for a usage error, and
-                // distinguishes it from the daemon failing to start.
-                std::process::exit(2);
-            }
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let command = match parse_args(&args) {
+        Ok(command) => command,
+        Err(message) => {
+            eprintln!("{message}\n\n{USAGE}");
+            // 2 is the conventional exit status for a usage error, and
+            // distinguishes it from the daemon failing to start.
+            std::process::exit(2);
         }
+    };
+
+    if let Command::Print(text) = command {
+        println!("{text}");
+        return Ok(());
     }
 
     init_tracing();
@@ -104,7 +167,19 @@ fn main() -> Result<()> {
         .build()
         .context("building the tokio runtime")?;
 
-    runtime.block_on(run())
+    runtime.block_on(async move {
+        match command {
+            Command::Daemon => run().await,
+            Command::Devices { window } => cli::devices(window).await,
+            Command::Send {
+                target,
+                files,
+                window,
+            } => cli::send(&target, files, window).await,
+            // Handled before the runtime is built.
+            Command::Print(_) => unreachable!("printed above"),
+        }
+    })
 }
 
 /// Installs the `tracing` subscriber for stderr.

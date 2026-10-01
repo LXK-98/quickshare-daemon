@@ -3,6 +3,57 @@
 Per-session record: what was done, what is verified, what broke, what is next.
 Newest first.
 
+## 2026-10-01 — Phase 3 started: discovery and sending
+
+**Added.** `devices` and `send` subcommands, a device registry, and the
+`--help`/argv handling they needed.
+
+- `src/devices.rs` — the device registry: applies discovery events, expires
+  entries not seen in 120 s, and hands out **refcounted discovery leases** so a
+  second front-end closing its menu cannot stop discovery out from under the
+  first. The leases are not reachable yet — only the D-Bus API can hold one —
+  but refcounting is designed in now because retrofitting it is the bug
+  docs/EXTENSION_PLAN.md exists to prevent.
+- `src/cli.rs` — one-shot `devices` and `send`. Both run their own short-lived
+  service and advertise as **invisible**: sending needs discovery, not
+  discoverability, and a one-shot should not briefly appear as a second receiver
+  beside a running daemon. They use a random port so they cannot collide with a
+  daemon holding a configured one.
+- `send` validates every file before starting a service, so a typo fails
+  immediately rather than after ten seconds of discovery, and refuses
+  directories, which Quick Share cannot send.
+- Ambiguous device names are an error listing the ids, never a guess. Sending a
+  file to the wrong device is not recoverable.
+
+**Three things reading `rqs_lib` turned up**, all now in RQS_LIB_NOTES.md:
+
+1. **`EndpointInfo.id` is not a device id — it is literally `"ip:port"`.** It
+   changes whenever a phone re-advertises on a fresh port, so the same device
+   arrives under a new id and a naive picker lists it twice. The registry now
+   deduplicates by address. This also **corrects advice I had written into
+   EXTENSION_PLAN.md** about exposing "stable device ids" over D-Bus: there are
+   none to expose.
+2. **Discovery filters out devices on this machine's own IPs**
+   (`is_not_self_ip`). So Packet running here is invisible to us — correct, but
+   it means "no devices found" is expected when the only advertiser is local.
+3. **`OutboundPayload` has one variant, `Files`.** Sending text, a URL or Wi-Fi
+   credentials is not supported by the library at all; those exist only inbound.
+
+**Verified.** Clippy clean, 42/42 tests. `devices` runs end to end: mDNS
+discovery, BLE advertiser on hci0, clean shutdown. It correctly found nothing —
+`avahi-browse` confirmed the only Quick Share advertiser on the LAN at the time
+was on this host, which `is_not_self_ip` filters by design.
+
+**Not verified: the send path itself.** No file has been sent. It needs a second
+device with its Quick Share sheet open, which needs a person holding a phone.
+
+**Two test fixtures were wrong and the new deduplication caught them.** Both
+built several "devices" sharing one IP, which is not a thing that happens on a
+LAN; the dedup correctly collapsed them into one and two tests failed. The
+fixtures now mirror `rqs_lib`'s real id format.
+
+---
+
 ## 2026-10-01 — Local cleanup, and two bugs it turned up
 
 A pass over local state after the GitHub remote was removed. Two of the six

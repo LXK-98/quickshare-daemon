@@ -182,9 +182,15 @@ daemon's footprint.
 ### Phase 3 — Sending (~1–2 days)
 
 - [ ] D-Bus API: `StartDiscovery`, `ListDevices`, `SendFiles`, `Visibility`
-- [ ] Outbound transfers with progress/result notifications
+- [~] Outbound transfers with progress/result notifications — the outbound
+      path is written and reports progress on the CLI; desktop notifications for
+      it wait on the daemon-side integration, and nothing has been sent yet
 - [ ] Nautilus extension with device submenu (or zenity fallback)
-- [ ] Small CLI: `quickshare-daemon send <files>` / `devices` for scripting
+- [~] Small CLI: `quickshare-daemon send <files>` / `devices` for scripting —
+      both exist and `devices` is verified working. They run their own
+      short-lived service rather than talking to a running daemon; becoming
+      thin D-Bus clients waits on the API above. **`send` has never
+      successfully sent a file** — needs a second device
 
 ### Phase 4 — Memory tuning & packaging (~0.5 day)
 
