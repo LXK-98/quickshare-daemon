@@ -185,6 +185,68 @@ fn resolve_target(registry: &Registry, target: &str) -> Result<Device> {
     }
 }
 
+/// Waits until `target` appears and is reachable, or `deadline` passes.
+///
+/// Unlike [`devices`], this returns the moment the wanted device shows up
+/// instead of collecting for a fixed window: there is nothing to gain from
+/// waiting once the recipient is known.
+///
+/// The deadline is generous because a phone only advertises while its Quick
+/// Share sheet is open, and nobody can hold that open while typing a command.
+/// Waiting lets the user start the send first and then pick up the phone — the
+/// failure that prompted this, on 2026-10-01, was a sheet closing between a
+/// successful `devices` run and the `send` that followed it.
+async fn find_target(session: &mut Session, target: &str, deadline: Duration) -> Result<Device> {
+    let mut registry = Registry::default();
+    let until = tokio::time::Instant::now() + deadline;
+    let mut announced = false;
+
+    loop {
+        // Only a reachable match will do: an entry without an address cannot be
+        // connected to, and reporting success here would fail a moment later.
+        if let Ok(device) = resolve_target(&registry, target) {
+            if device.is_reachable() {
+                return Ok(device);
+            }
+        }
+
+        let remaining = until.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            // Report what *was* found: "not found" is much less useful than
+            // "found these instead", especially with a mistyped name.
+            return resolve_target(&registry, target).and_then(|device| {
+                bail!(
+                    "{} was found but never became reachable",
+                    device.display_name()
+                )
+            });
+        }
+
+        if !announced {
+            eprintln!(
+                "Waiting up to {}s for {target}. Open its Quick Share sheet now if it is not \
+                 already open.",
+                deadline.as_secs()
+            );
+            announced = true;
+        }
+
+        match tokio::time::timeout(remaining, session.endpoints.recv()).await {
+            Ok(Ok(endpoint)) => {
+                registry.apply(endpoint);
+            }
+            Ok(Err(broadcast::error::RecvError::Lagged(n))) => {
+                tracing::warn!(skipped = n, "fell behind on discovery events");
+            }
+            Ok(Err(broadcast::error::RecvError::Closed)) => {
+                bail!("discovery stopped unexpectedly")
+            }
+            // Deadline reached; the next loop turn reports it.
+            Err(_) => {}
+        }
+    }
+}
+
 /// `quickshare-daemon send <target> <files…>` — send files to one device.
 pub async fn send(target: &str, files: Vec<PathBuf>, window: Duration) -> Result<()> {
     if files.is_empty() {
@@ -207,10 +269,8 @@ pub async fn send(target: &str, files: Vec<PathBuf>, window: Duration) -> Result
     }
 
     let mut session = start_session().await?;
-    eprintln!("Looking for {target}…");
 
-    let registry = discover(&mut session, window, false).await;
-    let device = match resolve_target(&registry, target) {
+    let device = match find_target(&mut session, target, window).await {
         Ok(device) => device,
         Err(err) => {
             session.rqs.stop().await;
@@ -218,13 +278,11 @@ pub async fn send(target: &str, files: Vec<PathBuf>, window: Duration) -> Result
         }
     };
 
-    let Some(addr) = device.addr.clone() else {
-        session.rqs.stop().await;
-        bail!(
-            "{} was found but has not resolved an address yet; try again",
-            device.display_name()
-        );
-    };
+    // `find_target` only returns reachable devices.
+    let addr = device
+        .addr
+        .clone()
+        .expect("find_target returns only reachable devices");
 
     // Subscribe before sending, so no early state change is missed.
     let mut events = session.rqs.message_sender.subscribe();

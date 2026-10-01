@@ -63,7 +63,7 @@ quickshare-daemon — send and receive files over Quick Share
 Usage:
   quickshare-daemon                     run the receiving daemon
   quickshare-daemon devices [secs]      list nearby devices (default 8s)
-  quickshare-daemon send <to> <files…>  send files to a device
+  quickshare-daemon send <to> <files…>  send files to a device (waits 45s for it)
   quickshare-daemon --help | --version
 
 <to> is a device name or id as shown by `devices`.
@@ -79,12 +79,21 @@ Note: the other device must have its Quick Share sheet open to be discoverable.
 `devices` and `send` currently run their own short-lived service rather than
 talking to a running daemon.";
 
-/// How long `devices` and `send` look for nearby devices by default.
+/// How long `devices` spends collecting before printing the list.
 ///
 /// mDNS answers trickle in over a second or two, and a phone's Quick Share
 /// sheet re-advertises periodically rather than instantly, so a short window
 /// finds nothing and looks broken.
 const DEFAULT_DISCOVERY_SECS: u64 = 8;
+
+/// How long `send` will wait for the named device to turn up.
+///
+/// Much longer than the `devices` window, and for a different reason: a phone
+/// advertises only while its Quick Share sheet is open, and nobody can hold
+/// that open while typing a command. This is long enough to start the send and
+/// then pick up the phone. `send` returns as soon as the device appears, so the
+/// wait costs nothing when it is already there.
+const SEND_WAIT_SECS: u64 = 45;
 
 /// What the process was asked to do.
 enum Command {
@@ -130,7 +139,7 @@ fn parse_args(args: &[String]) -> Result<Command, String> {
             [target, files @ ..] => Ok(Command::Send {
                 target: target.clone(),
                 files: files.iter().map(PathBuf::from).collect(),
-                window,
+                window: Duration::from_secs(SEND_WAIT_SECS),
             }),
         },
         [other, ..] => Err(format!("unexpected argument: {other}")),

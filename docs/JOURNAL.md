@@ -3,6 +3,47 @@
 Per-session record: what was done, what is verified, what broke, what is next.
 Newest first.
 
+## 2026-10-01 — Discovery verified against a real phone; two bugs from it
+
+Testing `devices` against a Pixel 6a found two things no unit test would have.
+
+**Device names were being wiped.** The phone resolved correctly as
+`Pixel 6a`, then reappeared as `Unknown device`. Cause: a backwards
+assumption about `rqs_lib`. Its `ServiceRemoved` branch sends
+`EndpointInfo { id, ..Default::default() }` — the id and *nothing else*, so
+`present` is `None` because that is `Option`'s default, and `Some(false)` is
+never sent anywhere in the library. Reading `None` as "still present" applied
+the empty removal as an update and erased the name.
+
+**My test asserted the same wrong belief, which is why it passed.** It is now
+inverted, named after the real behaviour, and carries a note saying what it used
+to claim. The name is additionally guarded against being overwritten by an
+absent one, because losing a device's name is the one failure of this class a
+user actually sees.
+
+Removals now *withdraw* with a 10 s grace rather than deleting. The same run
+showed `ServiceRemoved` arriving seconds after `ServiceResolved` while the
+phone's sheet was open and it was still reachable, so acting instantly would
+blink a device out of the picker exactly as the user reaches for it. `rqs_lib`'s
+own comment claims a threshold here; none is implemented.
+
+**Confirmed fixed against the phone:** a fresh run (different random port and
+endpoint id, which is how one run is told from another — both are randomised per
+start) printed the name once, took the `ServiceRemoved` silently, and listed
+`Pixel 6a`.
+
+**`send` could not find a device that `devices` had just found.** The sheet had
+closed in between, and `send` gave up after its 8 s window. That is not a bug so
+much as a design mistake: a phone advertises only while its Quick Share sheet is
+open, and nobody can hold that open while typing a command. `send` now waits up
+to 45 s and returns the *moment* the named device appears, so the wait costs
+nothing when it is already there and makes "start the send, then pick up the
+phone" the normal way to use it.
+
+Clippy clean, 45/45 tests.
+
+---
+
 ## 2026-10-01 — Phase 3 started: discovery and sending
 
 **Added.** `devices` and `send` subcommands, a device registry, and the
