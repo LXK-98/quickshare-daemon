@@ -3,6 +3,48 @@
 Per-session record: what was done, what is verified, what broke, what is next.
 Newest first.
 
+## 2026-10-01 — Sending tested against the phone; an upstream crypto bug
+
+**The send path reaches `Finished` and transfers every byte**, confirmed on a
+57-byte text file: PIN shown, `SendingFiles`, 57/57 acknowledged, "All files
+have been transferred". Whether the file is usable on the phone is **still
+unconfirmed** — see the caution below.
+
+**A caution I earned.** I reported an earlier run as "Sent" on the strength of
+our side reaching `Finished`, and the phone showed an error. `Finished` means our
+send loop completed after the receiver's Accept frame; it is not a report from
+the receiving application. Do not call a transfer successful without the
+receiving end agreeing.
+
+**Bug fixed: the PIN was never shown when sending.** `rqs_lib`'s outbound path
+never emits `WaitingForUserConsent` — zero occurrences in `hdl/outbound.rs` —
+and that was the only branch where the CLI printed the PIN. So the PIN was
+computed, logged by `rqs_lib` at INFO, and never surfaced, while the user watched
+a terminal that gave no sign it was waiting for them. Result: `consent denied:
+TimedOut`. The PIN now prints from whatever event first carries it.
+
+**Upstream bug found: `elliptic curve point encoding error`.** A send failed
+during the handshake, and the phone said *"Dateien können nicht übertragen
+werden"*. Both `inbound.rs` and `outbound.rs` rebuild the peer's public key
+without left-padding a short coordinate, so roughly 1 connection in 128 produces
+a 64-byte buffer where 65 is required. Intermittent, unrelated to file type, and
+**it affects receiving too**. Full analysis in RQS_LIB_NOTES.md; the fix is three
+lines in a fork, not yet taken.
+
+**Error messages corrected.** A failed handshake was being reported as
+"{device} never accepted the transfer", which blames the user for something they
+were never asked. `Disconnected` now resolves three ways, by how far the
+handshake got: no PIN means the key exchange failed, a PIN but no bytes means
+consent was really refused, and bytes in flight means a genuine drop.
+
+**Testing constraint, from Alex:** only ever transfer to "Pixel 6a", and
+only with files generated for the test. I had suggested sending one of their
+received files from `~/Downloads`, which is someone else's content and not mine
+to retransmit. Also disclosed: `MDnsDiscovery` TCP-probes every advertiser it
+resolves, so `devices` is not passive.
+
+---
+
 ## 2026-10-01 — Discovery verified against a real phone; two bugs from it
 
 Testing `devices` against a Pixel 6a found two things no unit test would have.

@@ -207,6 +207,61 @@ it, a disconnect means the receiver never accepted.
 receiver that accepts and then fails to store the file still leaves us at
 `Finished`.
 
+## Upstream bug: short EC coordinates break the handshake
+
+**Symptom:** `TcpServer: error while handling client: elliptic curve point
+encoding error (SentUkeyClientInit)`, the connection drops before anyone is
+asked to accept anything, and the Android side says *"Dateien können nicht
+übertragen werden"* / "Can't transfer files". Observed 2026-10-01.
+
+**Cause.** Both `hdl/outbound.rs` (~line 1009) and `hdl/inbound.rs` (~line 1140)
+rebuild the peer's public key as an uncompressed SEC1 point:
+
+```rust
+let mut bytes = vec![0x04];
+if peer_p256_key.x.len() > 32 {
+    bytes.extend_from_slice(&peer_p256_key.x[peer_p256_key.x.len() - 32..]);
+} else {
+    bytes.extend_from_slice(&peer_p256_key.x);   // <-- no left-padding
+}
+// ...same for y
+let encoded_point = EncodedPoint::from_bytes(bytes)?;
+```
+
+An over-long coordinate (33 bytes, from a sign byte) is truncated correctly. A
+**short** one is appended as-is, so the buffer ends up 63 or 64 bytes where
+`EncodedPoint::from_bytes` requires exactly 65 — and fails.
+
+Coordinates arrive as Java `BigInteger.toByteArray()` output, which is signed
+two's complement: it *prepends* 0x00 when the high bit is set (half the time,
+handled) and *strips* leading zeros otherwise. A P-256 coordinate has a leading
+zero byte with probability about 1/256, so roughly **1 connection in 128** fails
+this way, on either coordinate.
+
+**Consequences for us.**
+
+- It is intermittent and unrelated to file type, size, or anything the user did.
+  Retrying usually succeeds.
+- **It affects receiving as well as sending** — the same code is in
+  `inbound.rs` — so it is not merely a `send` problem.
+- A client cannot see the cause: the failure surfaces as `TransferState::
+  Disconnected` with no error text. Our CLI infers it from a PIN never having
+  appeared, since the PIN is derived after this decode.
+
+**The fix is three lines** — left-pad a short coordinate to 32 bytes instead of
+appending it raw. PLAN.md's standing guidance is to fork `rqs_lib` rather than
+Packet if patching is needed, so this is the sanctioned path; it is not yet done,
+because a fork is a maintenance commitment and the bug is rare enough to retry
+around.
+
+## Discovery contacts every device it finds
+
+Worth stating plainly, because "discovery" sounds passive: `MDnsDiscovery` only
+emits an `EndpointInfo` after `TcpStream::connect(ip:port)` **succeeds**. So
+browsing opens a TCP connection to every Quick Share advertiser on the network,
+not just to one we intend to send to. There is no way to disable the probe
+without patching the library.
+
 ## Logging
 
 `core_lib` does `#[macro_use] extern crate log` and logs through the **`log`

@@ -391,10 +391,22 @@ async fn follow_transfer(
                     bail!("{} declined the transfer", device.display_name())
                 }
                 TransferState::Cancelled => bail!("the transfer was cancelled"),
-                // One state, two very different causes. Before any bytes move,
-                // a disconnect means the receiver never accepted — which
-                // rqs_lib logs as "consent denied: TimedOut" and which is by
-                // far the more common of the two.
+                // One state, three very different causes, told apart by how far
+                // the handshake got.
+                //
+                // No PIN means the key exchange never completed, so the
+                // receiver was never asked anything — blaming the user for not
+                // accepting would be wrong, and is what this code did before.
+                TransferState::Disconnected if !pin_shown => bail!(
+                    "the connection to {} failed during the encrypted handshake, before it \
+                     could ask anyone to accept anything. Look for an rqs_lib ERROR line \
+                     above. If it mentions \"elliptic curve point encoding\", that is a known \
+                     intermittent bug affecting roughly 1 in 128 connections — retrying \
+                     usually works. See docs/RQS_LIB_NOTES.md.",
+                    device.display_name()
+                ),
+                // A PIN was shown but no bytes moved: the receiver really was
+                // asked and did not agree.
                 TransferState::Disconnected if !started_sending => bail!(
                     "{} never accepted the transfer — it timed out, or was declined. \
                      Accept it on the device while this is running.",
