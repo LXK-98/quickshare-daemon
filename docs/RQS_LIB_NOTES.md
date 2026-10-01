@@ -114,6 +114,20 @@ and `ack_bytes`. Note `TransferPayload::Wifi { ssid, password, security_type }`
 — a sender can push Wi-Fi credentials, which PLAN.md does not mention and
 Phase 1 should at least not mishandle.
 
+## Received files
+
+`rqs_lib` writes into the download directory itself and **resolves filename
+collisions on its own**: `hdl/inbound.rs` checks `dest.exists()` and inserts
+` (1)`, ` (2)`, … before the extension, so `lorem.txt` becomes `lorem (1).txt`.
+Nothing is needed on our side, and anything we added would race with it.
+
+It reports the result as **bare file names, not paths**
+(`files_name.push(file.name())`), so a caller that wants a usable path must join
+them with the download directory it configured. Note that the name it reports is
+the *original* one when a collision occurred — not the ` (1)` variant actually
+written. A notification naming the file can therefore name a file that is not
+the one on disk; harmless for display, wrong for anything that opens it by name.
+
 ## Logging
 
 `core_lib` does `#[macro_use] extern crate log` and logs through the **`log`

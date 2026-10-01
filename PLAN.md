@@ -170,8 +170,11 @@ daemon's footprint.
       the accept timeout is done and verified end to end against GNOME Shell.
       Cancellations and mid-transfer disconnects are handled as far as
       notifications go, but not exercised
-- [ ] Filename collisions in `download_dir` — not started; check first whether
-      `rqs_lib` already handles this, since it does the writing
+- [x] Filename collisions in `download_dir` — **nothing to do: `rqs_lib`
+      already handles it.** `hdl/inbound.rs` checks `dest.exists()` and appends
+      ` (1)`, ` (2)`, … before the extension (`lorem.txt` → `lorem (1).txt`),
+      which is the convention everything else uses. Verified by reading the
+      pinned source on 2026-10-01
 - [x] `SIGHUP` config reload — written, unexecuted. Reloads, applies
       `download_dir` in place, and restarts the service only for the three keys
       that need it

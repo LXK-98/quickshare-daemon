@@ -49,7 +49,48 @@ use crate::meminfo::MemSnapshot;
 use crate::network::NetworkMonitor;
 use crate::notify::{Consent, Notifier, Urgency, format_bytes};
 
+/// What `--help` prints.
+///
+/// There are no options: everything is configured through the file named below,
+/// which is the point of the design. The subcommands PLAN.md's Phase 3 calls for
+/// (`send`, `devices`) do not exist yet, and saying so beats a bare usage line
+/// that leaves someone guessing.
+const USAGE: &str = "\
+quickshare-daemon — receive files over Quick Share
+
+Usage: quickshare-daemon [--help | --version]
+
+Takes no options. Configuration lives in
+  $XDG_CONFIG_HOME/quickshare-daemon/config.toml
+which is written with defaults on first run.
+
+Logging goes to stderr; filter it with RUST_LOG, e.g.
+  RUST_LOG=quickshare_daemon=debug,rqs_lib=debug
+
+Sending files is not implemented yet.";
+
 fn main() -> Result<()> {
+    // Checked before anything else starts: without this, `--help` and every
+    // typo'd flag were silently ignored and the daemon bound a port anyway.
+    if let Some(argument) = std::env::args().nth(1) {
+        match argument.as_str() {
+            "--help" | "-h" => {
+                println!("{USAGE}");
+                return Ok(());
+            }
+            "--version" | "-V" => {
+                println!("{} {}", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"));
+                return Ok(());
+            }
+            other => {
+                eprintln!("unexpected argument: {other}\n\n{USAGE}");
+                // 2 is the conventional exit status for a usage error, and
+                // distinguishes it from the daemon failing to start.
+                std::process::exit(2);
+            }
+        }
+    }
+
     init_tracing();
 
     // A current_thread runtime, not Packet's multi-threaded one. rqs_lib only
@@ -521,10 +562,11 @@ async fn handle_event(
                 Some(TransferPayload::Files(files)) => {
                     let paths: Vec<PathBuf> = files
                         .iter()
-                        // rqs_lib reports bare file names, not paths: it writes
-                        // them into the download directory it was configured
-                        // with, and reports what it called them.
-                        .map(|name| config.download_dir.join(name))
+                        // rqs_lib reports bare file names, not paths, and
+                        // reports the *original* name even when a collision
+                        // made it write `name (1).ext`. Joining naively would
+                        // point the Open button at the pre-existing file.
+                        .map(|name| open::resolve_received(&config.download_dir, name))
                         .collect();
                     spawn_received_files_notification(
                         Arc::clone(notifier),

@@ -3,6 +3,54 @@
 Per-session record: what was done, what is verified, what broke, what is next.
 Newest first.
 
+## 2026-10-01 — Local cleanup, and two bugs it turned up
+
+A pass over local state after the GitHub remote was removed. Two of the six
+items were real bugs, both found by reading `rqs_lib` rather than by testing.
+
+**Bug: the "Open" button could open the wrong file.** `rqs_lib` resolves
+filename collisions itself (`lorem.txt` → `lorem (1).txt`) but reports the
+**original** name in the transfer metadata, not the one it wrote. Joining the
+reported name with `download_dir` therefore pointed at the *pre-existing* file
+whenever a collision happened — so receiving a second `IMG_1234.jpg` and
+pressing Open would have shown the first one. `open::resolve_received` now picks
+the newest of the candidates `rqs_lib` could have chosen. It is a heuristic,
+reliable only because the file was written seconds earlier; the real fix belongs
+upstream, in reporting the path actually written.
+
+**Bug: any argument was silently ignored.** `quickshare-daemon --help` started
+the daemon and bound a port. So would `--visible`, or any typo. Now `--help`
+and `--version` do what they should and an unknown argument exits 2 without
+starting a network service. Found by running `--help` to check the install,
+which started a daemon instead.
+
+**Also fixed.**
+
+- Removed the dead `origin` remote, so git operations no longer point at a
+  repository that is being deleted.
+- `~/.config/quickshare-daemon/config.toml` still had
+  `device_name = "dell.fritz.box"` from before the FQDN fix — the file is
+  written once, so fixing the default did not fix the existing file. Now `dell`.
+- `cargo install --path .` so the systemd unit's `ExecStart`
+  (`%h/.cargo/bin/quickshare-daemon`) resolves. It previously pointed at
+  nothing.
+- Removed a stray `/tmp/qsd-final.log` left by an earlier test run.
+
+**Resolved, with no work needed:** PLAN.md's Phase 2 item for filename
+collisions. `rqs_lib` already handles it, in the conventional way, and anything
+we added would race with it. Documented in RQS_LIB_NOTES.md.
+
+**Corrected an earlier claim of mine.** I had flagged the `LICENSE` file's
+`<year> <name of author>` placeholders as something to fill in for GitHub's
+license detection. They are part of the GPL's own "How to Apply These Terms"
+appendix, which is meant to ship verbatim — filling them in would be editing
+the license text. Nothing to fix. GitHub's "not detected" on a freshly created
+repository was almost certainly indexing lag.
+
+Clippy clean, 25/25 tests.
+
+---
+
 ## 2026-09-30 — Receiving confirmed from Android; Open / Show in Folder buttons
 
 **A file was sent successfully from an Android phone.** That closes the last

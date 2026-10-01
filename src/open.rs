@@ -110,6 +110,65 @@ async fn spawn_xdg_open(path: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Finds the file `rqs_lib` actually wrote, given the name it reported.
+///
+/// `rqs_lib` resolves filename collisions itself — `lorem.txt` becomes
+/// `lorem (1).txt` — but the name it reports in the transfer metadata is the
+/// **original**, not the one it wrote. Joining the reported name with the
+/// download directory therefore points at the *pre-existing* file whenever a
+/// collision occurred, so the "Open" button would open the older file rather
+/// than the one that just arrived.
+///
+/// There is no path in the metadata to use instead, so the real file is found
+/// by taking the newest of the candidates `rqs_lib` could have chosen. That is
+/// reliable here because the file was written seconds ago; it is a heuristic
+/// rather than a guarantee, and the right long-term fix is for `rqs_lib` to
+/// report the path it wrote.
+pub fn resolve_received(dir: &Path, reported_name: &str) -> PathBuf {
+    /// `rqs_lib` allocates suffixes from 1 upwards and stops at the first free
+    /// one, so the run is contiguous and this only bounds a pathological case.
+    const MAX_CANDIDATES: u32 = 64;
+
+    let base = dir.join(reported_name);
+    let reported = Path::new(reported_name);
+    let Some(stem) = reported.file_stem().and_then(|s| s.to_str()) else {
+        return base;
+    };
+    let extension = reported.extension().and_then(|e| e.to_str());
+
+    let mut best = base.clone();
+    let mut newest = modified_at(&base);
+
+    for counter in 1..=MAX_CANDIDATES {
+        let mut name = format!("{stem} ({counter})");
+        if let Some(extension) = extension {
+            name.push('.');
+            name.push_str(extension);
+        }
+        let candidate = dir.join(name);
+
+        // The suffixes are contiguous, so the first gap ends the run.
+        if !candidate.exists() {
+            break;
+        }
+        let candidate_time = modified_at(&candidate);
+        if candidate_time > newest {
+            newest = candidate_time;
+            best = candidate;
+        }
+    }
+
+    best
+}
+
+/// A file's modification time, or `None` if it cannot be read.
+///
+/// `None` sorts below every real timestamp, so a missing base name loses to any
+/// candidate that does exist.
+fn modified_at(path: &Path) -> Option<std::time::SystemTime> {
+    path.metadata().ok()?.modified().ok()
+}
+
 /// Builds a `file://` URI, percent-encoding what must be encoded.
 ///
 /// Written out rather than pulled from a crate because the rules for a path are
@@ -176,6 +235,84 @@ mod tests {
                 "{name} should not be openable"
             );
         }
+    }
+
+    /// Builds a throwaway directory for the collision tests.
+    fn temp_dir(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("qsd-open-{}-{tag}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn resolves_to_the_reported_name_when_there_was_no_collision() {
+        let dir = temp_dir("plain");
+        std::fs::write(dir.join("photo.jpg"), b"new").unwrap();
+
+        assert_eq!(resolve_received(&dir, "photo.jpg"), dir.join("photo.jpg"));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn resolves_to_the_newest_variant_after_a_collision() {
+        let dir = temp_dir("collision");
+        // The pre-existing file, and the one rqs_lib actually just wrote.
+        std::fs::write(dir.join("photo.jpg"), b"old").unwrap();
+        std::fs::write(dir.join("photo (1).jpg"), b"new").unwrap();
+
+        // Make the ordering unambiguous rather than relying on write order.
+        let old_time = std::time::SystemTime::now() - std::time::Duration::from_secs(3600);
+        filetime_set(&dir.join("photo.jpg"), old_time);
+
+        assert_eq!(
+            resolve_received(&dir, "photo.jpg"),
+            dir.join("photo (1).jpg"),
+            "must open the file that just arrived, not the one already there"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn stops_at_the_first_gap_in_the_sequence() {
+        let dir = temp_dir("gap");
+        std::fs::write(dir.join("a.txt"), b"base").unwrap();
+        // (1) missing, so (2) must not be considered even though it exists.
+        std::fs::write(dir.join("a (2).txt"), b"unrelated").unwrap();
+
+        assert_eq!(resolve_received(&dir, "a.txt"), dir.join("a.txt"));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn handles_names_without_an_extension() {
+        let dir = temp_dir("noext");
+        std::fs::write(dir.join("README"), b"old").unwrap();
+        std::fs::write(dir.join("README (1)"), b"new").unwrap();
+        filetime_set(
+            &dir.join("README"),
+            std::time::SystemTime::now() - std::time::Duration::from_secs(3600),
+        );
+
+        assert_eq!(resolve_received(&dir, "README"), dir.join("README (1)"));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Backdates a file so modification-time comparisons are deterministic.
+    ///
+    /// Uses `touch` rather than a crate: this is test-only, and adding a
+    /// dependency to the shipped binary for it would be the wrong trade.
+    fn filetime_set(path: &Path, time: std::time::SystemTime) {
+        let secs = time
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let status = std::process::Command::new("touch")
+            .arg("-d")
+            .arg(format!("@{secs}"))
+            .arg(path)
+            .status()
+            .expect("touch must be available");
+        assert!(status.success());
     }
 
     #[test]
