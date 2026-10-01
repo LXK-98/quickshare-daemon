@@ -325,6 +325,15 @@ async fn follow_transfer(
 ) -> Result<()> {
     const OVERALL_TIMEOUT: Duration = Duration::from_secs(300);
 
+    // The outbound path never emits `WaitingForUserConsent` — verified in the
+    // pinned source, which has zero occurrences of it in hdl/outbound.rs. The
+    // PIN arrives in the metadata of ordinary state changes instead, so it has
+    // to be picked up from whichever event carries it first.
+    let mut pin_shown = false;
+    // Whether the receiver ever accepted. Used to tell "never accepted" from a
+    // genuine mid-transfer drop, which are the same `Disconnected` state.
+    let mut started_sending = false;
+
     let result = tokio::time::timeout(OVERALL_TIMEOUT, async {
         loop {
             let message = match events.recv().await {
@@ -347,25 +356,27 @@ async fn follow_transfer(
             let state = client.state.clone().unwrap_or_default();
             tracing::debug!(id = %message.id, ?state, "outbound event");
 
-            match state {
-                TransferState::WaitingForUserConsent => {
-                    let pin = client.metadata.as_ref().and_then(|m| m.pin_code.clone());
-                    match pin {
-                        Some(pin) => eprintln!(
-                            "Waiting for {} to accept. PIN {pin} — check it matches.",
-                            device.display_name()
-                        ),
-                        None => {
-                            eprintln!("Waiting for {} to accept…", device.display_name())
-                        }
-                    }
+            // Shown as soon as it exists, whatever state carried it: the
+            // transfer cannot proceed until someone taps Accept on the other
+            // device, and they need the PIN to know it is really us.
+            if !pin_shown {
+                if let Some(pin) = client.metadata.as_ref().and_then(|m| m.pin_code.as_deref()) {
+                    eprintln!(
+                        "\n  ACCEPT ON {} — PIN {pin}\n  (check the phone shows the same PIN)",
+                        device.display_name().to_uppercase()
+                    );
+                    pin_shown = true;
                 }
+            }
+
+            match state {
                 TransferState::SendingFiles => {
+                    started_sending = true;
                     if let Some(m) = &client.metadata {
                         if m.total_bytes > 0 {
                             let percent = m.ack_bytes * 100 / m.total_bytes;
                             eprint!(
-                                "\r  {percent:>3}%  {} / {}",
+                                "\r  {percent:>3}%  {} / {}   ",
                                 format_bytes(m.ack_bytes),
                                 format_bytes(m.total_bytes)
                             );
@@ -380,6 +391,15 @@ async fn follow_transfer(
                     bail!("{} declined the transfer", device.display_name())
                 }
                 TransferState::Cancelled => bail!("the transfer was cancelled"),
+                // One state, two very different causes. Before any bytes move,
+                // a disconnect means the receiver never accepted — which
+                // rqs_lib logs as "consent denied: TimedOut" and which is by
+                // far the more common of the two.
+                TransferState::Disconnected if !started_sending => bail!(
+                    "{} never accepted the transfer — it timed out, or was declined. \
+                     Accept it on the device while this is running.",
+                    device.display_name()
+                ),
                 TransferState::Disconnected => {
                     bail!("{} disconnected mid-transfer", device.display_name())
                 }

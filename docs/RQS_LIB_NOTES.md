@@ -181,6 +181,32 @@ a file.
 labelled as locally. Hand it to the `mpsc::Sender<SendInfo>` that `run()`
 returned.
 
+## The outbound state machine differs from the inbound one
+
+**Outbound never emits `WaitingForUserConsent`.** Zero occurrences in
+`hdl/outbound.rs`. The states it actually sets are `Initial`,
+`SentUkeyClientInit`, `SentUkeyClientFinish`, `SentPairedKeyEncryption`,
+`SentPairedKeyResult`, `SentIntroduction`, `SendingFiles`, `Finished`,
+`Cancelled` and `Disconnected`.
+
+So a sender cannot learn "the receiver is being asked" from a state. It must
+instead watch for `pin_code` appearing in the metadata of whatever state change
+happens to carry it, which is how the PIN reaches a client at all. Keying a
+"show the PIN" branch off `WaitingForUserConsent`, as the inbound side does,
+produces code that never runs — and a user who is never told to accept anything.
+
+**A refused or unanswered transfer surfaces as `Disconnected`, not `Rejected`.**
+`rqs_lib` logs `Cannot process: consent denied: TimedOut` and then sets
+`Disconnected`. `Rejected` is an inbound-side state. A sender therefore cannot
+distinguish "declined" from "timed out" from "connection dropped" by state
+alone; the only usable signal is whether `SendingFiles` was ever reached. Before
+it, a disconnect means the receiver never accepted.
+
+**`Finished` means our side completed its send**, set after the receiver's
+`Status::Accept`. It is not a report from the receiving application, so a
+receiver that accepts and then fails to store the file still leaves us at
+`Finished`.
+
 ## Logging
 
 `core_lib` does `#[macro_use] extern crate log` and logs through the **`log`
