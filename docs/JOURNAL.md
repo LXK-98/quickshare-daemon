@@ -3,6 +3,23 @@
 Per-session record: what was done, what is verified, what broke, what is next.
 Newest first.
 
+## 2026-11-07 — Silenced the post-transfer ERROR line
+
+`rqs_lib` logged `error while handling client: early eof (Finished)` at ERROR
+after every *successful* transfer — the peer hanging up is simply how a transfer
+ends, and the read that notices it reports EOF.
+
+Both `manager.rs` sites already distinguished the `Finished` state, since they
+suppress the synthetic `Disconnected` message for it; the fix extends that same
+check to the log line. Applied to the inbound path as well as the outbound one,
+because a receiver hits this when the *sender* hangs up. Fork rev `cf71b1b`.
+
+**Verified** by repeating the confirmed-working send: transfer completed,
+`succeeded=true`, and no ERROR line anywhere in the daemon log where the same
+run previously produced one.
+
+---
+
 ## 2026-11-07 — Sending works end to end, confirmed on the device
 
 A file sent from the daemon arrived on the Pixel 6a, with the PIN notification

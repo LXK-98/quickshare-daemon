@@ -318,6 +318,20 @@ Packet if patching is needed, so this is the sanctioned path; it is not yet done
 because a fork is a maintenance commitment and the bug is rare enough to retry
 around.
 
+## A peer's post-transfer hangup is logged as an error
+
+After a transfer finishes, the peer closing the connection is how it ends, and
+the read that discovers it surfaces as `early eof`. Both `manager.rs` paths
+logged that at ERROR, so every *successful* transfer left
+
+```
+ERROR TcpServer: error while handling client: early eof (Finished)
+```
+
+in the journal. Fixed in our fork (`cf71b1b`) by extending the `Finished` check
+those sites already make — they suppress the synthetic `Disconnected` message
+for it — to the log line too. Still present upstream.
+
 ## Discovery contacts every device it finds
 
 Worth stating plainly, because "discovery" sounds passive: `MDnsDiscovery` only

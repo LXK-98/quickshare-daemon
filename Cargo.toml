@@ -20,10 +20,11 @@ futures-util = { version = "0.3", default-features = false }
 # spelled out here so a change upstream cannot silently alter our build).
 #
 # Our own fork, branched at nozwock's `17702ed` -- the rev Packet is tested
-# against -- carrying two fixes upstream still ships broken: the P-256
-# coordinate padding (docs/DECISIONS.md#d-012) and the Disconnection frame being
-# sent after Finished is announced rather than before (D-014).
-rqs_lib = { git = "https://github.com/LXK-98/rquickshare.git", rev = "7725c0b2f7a95c82217aa72d4f901857bd75e701", default-features = false, features = [
+# against -- carrying three fixes upstream still ships broken: the P-256
+# coordinate padding (docs/DECISIONS.md#d-012), the Disconnection frame being
+# sent after Finished is announced rather than before (D-014), and a peer's
+# post-transfer hangup being logged at ERROR.
+rqs_lib = { git = "https://github.com/LXK-98/rquickshare.git", rev = "cf71b1b024ce428c64c143e249131a6bbe8991a5", default-features = false, features = [
     "experimental",
 ] }
 
