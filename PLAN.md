@@ -181,7 +181,10 @@ daemon's footprint.
 
 ### Phase 3 — Sending (~1–2 days)
 
-- [ ] D-Bus API: `StartDiscovery`, `ListDevices`, `SendFiles`, `Visibility`
+- [x] D-Bus API: `StartDiscovery`, `ListDevices`, `SendFiles`, `Visibility` —
+      `org.quickshare.Daemon1`, verified against the live session bus including
+      refcounted discovery leases released on client departure (D-013).
+      `SendFiles` itself has not yet been driven through to a real transfer
 - [~] Outbound transfers with progress/result notifications — the outbound
       path is written and reports progress on the CLI; desktop notifications for
       it wait on the daemon-side integration, and nothing has been sent yet

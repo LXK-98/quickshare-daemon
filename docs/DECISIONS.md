@@ -327,6 +327,54 @@ a file you need to look at before running.
 
 ---
 
+## D-013 — The D-Bus API shape
+
+**Date:** 2026-11-07
+
+`org.quickshare.Daemon1` at `/org/quickshare/Daemon1`. The three decisions
+EXTENSION_PLAN.md said to make now, made:
+
+**Signals, not polling.** `DevicesChanged` and `TransferFinished`, plus the
+automatic `PropertiesChanged` on `Visible`. `DevicesChanged` deliberately
+carries **no payload** — a client re-reads `ListDevices`. One source of truth,
+and no client assembling a stale view from deltas it may have missed.
+
+**`aa{sv}`, not fixed tuples.** Keys `id`, `name`, `address`, `reachable`.
+`reachable` is included rather than left to be inferred from an empty
+`address`: whether a device can be sent to is our judgement, not an artefact of
+how we represent it. A test pins the key set, since clients index by name and
+renaming one is a breaking change.
+
+**Discovery is leased.** `StartDiscovery` takes a lease keyed by the caller's
+bus unique name (`:1.42`), which the bus assigns, the client cannot spoof, and
+which disappears exactly when the client does. A `NameOwnerChanged` watcher
+turns a departure into `Command::ClientGone`. Without that, a front-end
+crashing with a lease open would pin discovery — and its BLE advertiser — on
+until the daemon restarted.
+
+**The interface holds no state.** Handlers send a `Command` into the event loop
+over a channel and await a `oneshot` reply. This settles the question D-005 left
+open: `zbus` handlers are separate entry points that would each need
+`&mut RQS`, and passing commands keeps the loop the single owner rather than
+reintroducing the `Arc<Mutex<…>>` that D-005 removed. The `oneshot` is what
+lets a handler report the real outcome instead of acknowledging blindly.
+
+**The bus is optional.** Failing to claim the name is a warning, not a fatal
+error: a second daemon, or a session without a bus, should still receive files.
+It simply cannot be driven remotely.
+
+**Verified 2026-11-07** against the live session bus: introspection shows the
+full interface, `Visible` reads, `ListDevices` returns `aa{sv}`,
+`StartDiscovery` attributes a lease to `:1.1314`, that client's departure
+releases it, and a second client **joins the running discovery** inside the
+grace period rather than restarting mDNS.
+
+**Cost measured.** Serving the API moves idle from 6.2 MB RSS / 3.5 MB PSS / 2
+threads to **6.7 MB / 4.0 MB / 3** — `zbus` brings its own task and a bus
+connection. Still inside PLAN.md's 8 MB ceiling.
+
+---
+
 ## D-012 — Fork `rqs_lib` to fix the P-256 coordinate padding
 
 **Date:** 2026-11-07

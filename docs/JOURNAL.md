@@ -3,6 +3,64 @@
 Per-session record: what was done, what is verified, what broke, what is next.
 Newest first.
 
+## 2026-11-07 — D-Bus API, and a look at transports without a shared LAN
+
+**`org.quickshare.Daemon1` is live.** `StartDiscovery`, `StopDiscovery`,
+`ListDevices` → `aa{sv}`, `SendFiles(target, paths)` → transfer id, a `Visible`
+property, and `DevicesChanged` / `TransferFinished` signals. `src/dbus.rs` holds
+the interface; the event loop gained a discovery branch, a command branch and a
+housekeeping tick. D-013.
+
+The interface holds no state: handlers push a `Command` into the event loop and
+await a `oneshot`. That settles D-005's open question without reintroducing the
+`Arc<Mutex<…>>` it removed.
+
+**The lease machinery is now reachable and verified end to end.** It had sat
+behind `#[allow(dead_code)]` since 2026-10-01 waiting for exactly this. Live
+against the session bus:
+
+```
+started discovery          holder=:1.1314
+client left the bus; released its lease  holder=:1.1314
+joined running discovery   holder=:1.1315
+client left the bus; released its lease  holder=:1.1315
+```
+
+The second client *joined* the running discovery instead of restarting mDNS —
+the grace period working — and both departures were caught by the
+`NameOwnerChanged` watcher. That watcher is what makes a lease safe to hand out:
+without it a front-end crashing with one open would pin discovery and its BLE
+advertiser on until the daemon restarted.
+
+**Cost:** idle goes from 6.2 MB RSS / 3.5 MB PSS / 2 threads to 6.7 / 4.0 / 3.
+`zbus` brings a task and a bus connection. Inside the 8 MB ceiling.
+
+**Transports without a shared Wi-Fi network — researched, not started.** Alex
+wants to head this way, so the API was kept transport-agnostic. Findings:
+
+- `rqs_lib` advertises `mediums: vec![Medium::WifiLan]` and has **no**
+  `BandwidthUpgradeNegotiation` handling — one `Medium::` reference in the whole
+  crate.
+- The protos already define `BLUETOOTH`, `WIFI_HOTSPOT`, `WIFI_DIRECT`,
+  `WIFI_AWARE` and `WEB_RTC` with credential messages, so the wire format
+  exists and the implementation does not.
+- Both `InboundRequest` and `OutboundRequest` hold `socket: TcpStream`
+  **concretely**, so step zero for any new transport is genericising the
+  handshake over `AsyncRead + AsyncWrite`.
+
+Most tractable route: a Bluetooth RFCOMM transport (`bluer` is already a
+dependency) to get a connection with no shared LAN, then optionally a
+`WIFI_HOTSPOT` upgrade for throughput. WebRTC needs Google's signalling and is
+not viable. All of it lands in the fork from D-012.
+
+48/48 tests, clippy clean.
+
+**Not done:** the CLI still runs its own short-lived service rather than using
+this API, and the daemon does not yet post notifications for outbound
+transfers.
+
+---
+
 ## 2026-11-07 — Forked `rqs_lib` and fixed the EC point bug
 
 **Re-checked upstream first.** Nothing had been fixed. `nozwock/rquickshare` is

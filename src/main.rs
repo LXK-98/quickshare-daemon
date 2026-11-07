@@ -29,6 +29,7 @@
 
 mod cli;
 mod config;
+mod dbus;
 mod devices;
 mod meminfo;
 mod network;
@@ -43,10 +44,12 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use rqs_lib::channel::{ChannelMessage, Message, MessageClient, TransferAction, TransferKind};
 use rqs_lib::hdl::info::TransferPayload;
-use rqs_lib::{RQS, TransferState, Visibility};
+use rqs_lib::{EndpointInfo, OutboundPayload, RQS, SendInfo, TransferState, Visibility};
 use tokio::sync::broadcast::{Sender, error::RecvError};
 
 use crate::config::Config;
+use crate::dbus::{Command, Daemon1};
+use crate::devices::{IDLE_GRACE, Registry};
 use crate::meminfo::MemSnapshot;
 use crate::network::NetworkMonitor;
 use crate::notify::{Consent, Notifier, Urgency, format_bytes};
@@ -96,7 +99,7 @@ const DEFAULT_DISCOVERY_SECS: u64 = 8;
 const SEND_WAIT_SECS: u64 = 45;
 
 /// What the process was asked to do.
-enum Command {
+enum Invocation {
     /// Run the receiving daemon.
     Daemon,
     /// List nearby devices.
@@ -115,20 +118,20 @@ enum Command {
 ///
 /// Hand-rolled rather than pulling in `clap`: there are three verbs and one
 /// optional number, and the binary's size is something this project measures.
-fn parse_args(args: &[String]) -> Result<Command, String> {
+fn parse_args(args: &[String]) -> Result<Invocation, String> {
     let window = Duration::from_secs(DEFAULT_DISCOVERY_SECS);
 
     match args {
-        [] => Ok(Command::Daemon),
-        [flag] if flag == "--help" || flag == "-h" => Ok(Command::Print(USAGE.to_owned())),
-        [flag] if flag == "--version" || flag == "-V" => Ok(Command::Print(format!(
+        [] => Ok(Invocation::Daemon),
+        [flag] if flag == "--help" || flag == "-h" => Ok(Invocation::Print(USAGE.to_owned())),
+        [flag] if flag == "--version" || flag == "-V" => Ok(Invocation::Print(format!(
             "{} {}",
             env!("CARGO_PKG_NAME"),
             env!("CARGO_PKG_VERSION")
         ))),
-        [verb] if verb == "devices" => Ok(Command::Devices { window }),
+        [verb] if verb == "devices" => Ok(Invocation::Devices { window }),
         [verb, secs] if verb == "devices" => match secs.parse::<u64>() {
-            Ok(secs) if secs > 0 => Ok(Command::Devices {
+            Ok(secs) if secs > 0 => Ok(Invocation::Devices {
                 window: Duration::from_secs(secs),
             }),
             _ => Err(format!("not a number of seconds: {secs:?}")),
@@ -136,7 +139,7 @@ fn parse_args(args: &[String]) -> Result<Command, String> {
         [verb, ..] if verb == "send" => match &args[1..] {
             [] => Err("send needs a device and at least one file".to_owned()),
             [_target] => Err("send needs at least one file".to_owned()),
-            [target, files @ ..] => Ok(Command::Send {
+            [target, files @ ..] => Ok(Invocation::Send {
                 target: target.clone(),
                 files: files.iter().map(PathBuf::from).collect(),
                 window: Duration::from_secs(SEND_WAIT_SECS),
@@ -158,7 +161,7 @@ fn main() -> Result<()> {
         }
     };
 
-    if let Command::Print(text) = command {
+    if let Invocation::Print(text) = command {
         println!("{text}");
         return Ok(());
     }
@@ -178,15 +181,15 @@ fn main() -> Result<()> {
 
     runtime.block_on(async move {
         match command {
-            Command::Daemon => run().await,
-            Command::Devices { window } => cli::devices(window).await,
-            Command::Send {
+            Invocation::Daemon => run().await,
+            Invocation::Devices { window } => cli::devices(window).await,
+            Invocation::Send {
                 target,
                 files,
                 window,
             } => cli::send(&target, files, window).await,
             // Handled before the runtime is built.
-            Command::Print(_) => unreachable!("printed above"),
+            Invocation::Print(_) => unreachable!("printed above"),
         }
     })
 }
@@ -278,7 +281,7 @@ async fn run() -> Result<()> {
     //
     // `_ble_events` fires when a nearby device starts sharing; Phase 3 can use
     // it to enable discovery on demand instead of running mDNS continuously.
-    let (_file_sender, _ble_events) = rqs
+    let (file_sender, _ble_events) = rqs
         .run()
         .await
         .context("starting the Quick Share service")?;
@@ -295,6 +298,46 @@ async fn run() -> Result<()> {
     // A restart asked for while transfers were in flight, run as soon as the
     // last one ends.
     let mut restart_pending = false;
+
+    let mut registry = Registry::default();
+    // Discovery's event channel. Created once and kept for the daemon's life:
+    // `rqs.discovery()` takes a sender each time it starts, and reusing one
+    // keeps our receiver valid across stop/start cycles.
+    let (endpoint_tx, mut endpoints) = tokio::sync::broadcast::channel::<EndpointInfo>(32);
+    let mut discovering = false;
+
+    // Claiming the name is not fatal: a second daemon, or a session without a
+    // bus, should still receive files. It just cannot be driven remotely.
+    let (commands_tx, mut commands) = tokio::sync::mpsc::channel::<Command>(16);
+    let bus = match serve_dbus(commands_tx.clone()).await {
+        Ok(bus) => {
+            tracing::info!(name = dbus::BUS_NAME, "serving the D-Bus API");
+            Some(bus)
+        }
+        Err(err) => {
+            tracing::warn!(
+                "not serving the D-Bus API: {err:#}. Receiving still works; `devices` and \
+                 `send` will fall back to their own short-lived service"
+            );
+            None
+        }
+    };
+    // Emits our signals. Built from the connection, so it outlives any handler.
+    let emitter = match bus.as_ref() {
+        Some(connection) => {
+            zbus::object_server::SignalEmitter::new(connection, dbus::OBJECT_PATH).ok()
+        }
+        None => None,
+    };
+    if let Some(connection) = bus.as_ref() {
+        watch_for_departing_clients(connection.clone(), commands_tx.clone());
+    }
+
+    // Expires stale devices and stops discovery once its leases have been gone
+    // for the grace period. One timer for both: neither needs to be prompt, and
+    // a second interval would be a second wakeup for no benefit.
+    let mut housekeeping = tokio::time::interval(IDLE_GRACE / 4);
+    housekeeping.reset();
 
     // The first measurement, taken after mDNS and BLE have settled, is the
     // number PLAN.md's target is about. Recorded in docs/MEASUREMENTS.md.
@@ -366,6 +409,47 @@ async fn run() -> Result<()> {
                     .as_mut()
                     .reset(tokio::time::Instant::now() + Duration::from_secs(86_400));
             }
+            // Discovery events, while discovery is running. The channel keeps
+            // a sender alive in `endpoint_tx`, so this never resolves to Closed
+            // and never busy-loops when discovery is off.
+            endpoint = endpoints.recv() => {
+                match endpoint {
+                    Ok(endpoint) => {
+                        if registry.apply(endpoint) {
+                            notify_devices_changed(emitter.as_ref()).await;
+                        }
+                    }
+                    Err(RecvError::Lagged(skipped)) => {
+                        tracing::warn!(skipped, "fell behind on discovery events");
+                    }
+                    Err(RecvError::Closed) => unreachable!("endpoint_tx is held"),
+                }
+            }
+            Some(command) = commands.recv() => {
+                handle_command(
+                    command,
+                    &mut rqs,
+                    &mut config,
+                    &mut registry,
+                    &mut discovering,
+                    &endpoint_tx,
+                    &file_sender,
+                    &mut restart_pending,
+                    &active,
+                    emitter.as_ref(),
+                )
+                .await;
+            }
+            _ = housekeeping.tick() => {
+                if registry.expire() {
+                    notify_devices_changed(emitter.as_ref()).await;
+                }
+                if discovering && registry.should_stop_discovery() {
+                    tracing::info!("stopping discovery; no client has wanted it for a while");
+                    rqs.stop_discovery();
+                    discovering = false;
+                }
+            }
             _ = measure.tick() => {
                 if let Ok(snap) = MemSnapshot::read() {
                     tracing::debug!(%snap, "footprint");
@@ -431,6 +515,241 @@ fn measure_interval() -> Duration {
             .and_then(|v| v.parse().ok())
             .unwrap_or(60),
     )
+}
+
+/// Claims [`dbus::BUS_NAME`] and serves the interface.
+async fn serve_dbus(commands: tokio::sync::mpsc::Sender<Command>) -> Result<zbus::Connection> {
+    let connection = zbus::connection::Builder::session()
+        .context("connecting to the session bus")?
+        .name(dbus::BUS_NAME)
+        .context("claiming the bus name")?
+        .serve_at(dbus::OBJECT_PATH, Daemon1::new(commands))
+        .context("serving the object")?
+        .build()
+        .await
+        .context("building the connection")?;
+    Ok(connection)
+}
+
+/// Releases a client's discovery lease when it leaves the bus.
+///
+/// Without this, a front-end that crashed holding a lease would pin discovery
+/// on, along with its BLE advertiser, until the daemon restarted. Watching
+/// `NameOwnerChanged` is what makes a lease safe to hand out at all.
+fn watch_for_departing_clients(
+    connection: zbus::Connection,
+    commands: tokio::sync::mpsc::Sender<Command>,
+) {
+    tokio::spawn(async move {
+        use futures_util::StreamExt;
+
+        let proxy = match zbus::fdo::DBusProxy::new(&connection).await {
+            Ok(proxy) => proxy,
+            Err(err) => {
+                tracing::warn!("cannot watch for departing clients: {err}");
+                return;
+            }
+        };
+        let mut changes = match proxy.receive_name_owner_changed().await {
+            Ok(changes) => changes,
+            Err(err) => {
+                tracing::warn!("cannot subscribe to NameOwnerChanged: {err}");
+                return;
+            }
+        };
+
+        while let Some(signal) = changes.next().await {
+            let Ok(args) = signal.args() else { continue };
+            // A name losing its owner and gaining none means that client is
+            // gone. Only unique names interest us: a well-known name changing
+            // owner says nothing about our leases.
+            let departed = args.name.as_str();
+            if args.new_owner.is_none() && departed.starts_with(':') {
+                let _ = commands
+                    .send(Command::ClientGone {
+                        holder: departed.to_owned(),
+                    })
+                    .await;
+            }
+        }
+    });
+}
+
+/// Emits `DevicesChanged`, if there is a bus to emit it on.
+async fn notify_devices_changed(emitter: Option<&zbus::object_server::SignalEmitter<'_>>) {
+    if let Some(emitter) = emitter {
+        if let Err(err) = Daemon1::devices_changed(emitter).await {
+            tracing::debug!("could not emit DevicesChanged: {err}");
+        }
+    }
+}
+
+/// Applies one [`Command`] from a D-Bus client.
+#[allow(clippy::too_many_arguments)]
+async fn handle_command(
+    command: Command,
+    rqs: &mut RQS,
+    config: &mut Config,
+    registry: &mut Registry,
+    discovering: &mut bool,
+    endpoint_tx: &Sender<EndpointInfo>,
+    file_sender: &tokio::sync::mpsc::Sender<SendInfo>,
+    restart_pending: &mut bool,
+    active: &HashMap<String, ActiveTransfer>,
+    emitter: Option<&zbus::object_server::SignalEmitter<'_>>,
+) {
+    match command {
+        Command::StartDiscovery { holder, reply } => {
+            let first = registry.acquire_lease(&holder);
+            let mut outcome = Ok(());
+
+            // `acquire_lease` reports the first lease, but discovery may still
+            // be running inside its grace period from a previous one -- in
+            // which case there is nothing to start.
+            if first && !*discovering {
+                match rqs.discovery(endpoint_tx.clone()) {
+                    Ok(()) => {
+                        *discovering = true;
+                        tracing::info!(%holder, "started discovery");
+                    }
+                    Err(err) => {
+                        // Drop the lease again: holding one for discovery that
+                        // never started would block a later attempt.
+                        registry.release_lease(&holder);
+                        outcome = Err(format!("{err:#}"));
+                    }
+                }
+            } else {
+                tracing::debug!(%holder, "joined running discovery");
+            }
+
+            let _ = reply.send(outcome);
+        }
+
+        Command::StopDiscovery { holder } => {
+            registry.release_lease(&holder);
+            // Not stopped here: the grace period is handled by housekeeping, so
+            // a menu that closes and reopens does not restart mDNS.
+            tracing::debug!(%holder, "released discovery lease");
+        }
+
+        Command::ClientGone { holder } => {
+            // `release_lease` is already a no-op for a holder that had none, so
+            // every departing client can be passed through unconditionally.
+            if registry.has_leases() {
+                registry.release_lease(&holder);
+                tracing::debug!(%holder, "client left the bus; released its lease");
+            }
+        }
+
+        Command::ListDevices { reply } => {
+            let _ = reply.send(registry.list());
+        }
+
+        Command::GetVisible { reply } => {
+            let _ = reply.send(config.visible);
+        }
+
+        Command::SetVisible { visible, reply } => {
+            if config.visible == visible {
+                let _ = reply.send(Ok(()));
+                return;
+            }
+            config.visible = visible;
+            // `change_visibility` alone would do it, but the service has to be
+            // restarted anyway for the mDNS advertisement to match, and a
+            // deferred restart is the only safe kind mid-transfer.
+            rqs.change_visibility(if visible {
+                Visibility::Visible
+            } else {
+                Visibility::Invisible
+            });
+            *restart_pending = !restart_service(rqs, config, active).await;
+            tracing::info!(visible, deferred = *restart_pending, "visibility changed");
+            let _ = reply.send(Ok(()));
+        }
+
+        Command::SendFiles {
+            target,
+            paths,
+            reply,
+        } => {
+            let _ = reply.send(start_outbound(registry, file_sender, &target, &paths).await);
+            // A send does not change the device list, but a client that just
+            // sent may want to re-read it; cheap enough not to withhold.
+            let _ = emitter;
+        }
+    }
+}
+
+/// Resolves `target` and hands the files to `rqs_lib`.
+///
+/// Returns the transfer id, which is `rqs_lib`'s `"ip:port"` endpoint id -- the
+/// only identifier it has. Note that it is not stable across the device
+/// re-advertising; see docs/RQS_LIB_NOTES.md.
+async fn start_outbound(
+    registry: &Registry,
+    file_sender: &tokio::sync::mpsc::Sender<SendInfo>,
+    target: &str,
+    paths: &[PathBuf],
+) -> Result<String, String> {
+    // Validated before anything is handed over, so a bad path fails as an
+    // error to the caller rather than as a transfer that dies later.
+    for path in paths {
+        match std::fs::metadata(path) {
+            Ok(metadata) if metadata.is_file() => {}
+            Ok(_) => {
+                return Err(format!(
+                    "{} is not a regular file; Quick Share cannot send directories",
+                    path.display()
+                ));
+            }
+            Err(err) => return Err(format!("cannot send {}: {err}", path.display())),
+        }
+    }
+
+    let device = registry
+        .get(target)
+        .cloned()
+        .or_else(|| {
+            let wanted = target.to_lowercase();
+            let mut matches = registry.list().into_iter().filter(|device| {
+                device
+                    .name
+                    .as_deref()
+                    .is_some_and(|name| name.to_lowercase() == wanted)
+            });
+            // Exactly one, or nothing: sending a file to the wrong device is
+            // not recoverable, so an ambiguous name is never resolved by
+            // guessing.
+            match (matches.next(), matches.next()) {
+                (Some(only), None) => Some(only),
+                _ => None,
+            }
+        })
+        .ok_or_else(|| format!("no single device matches {target:?}"))?;
+
+    let addr = device
+        .addr
+        .clone()
+        .ok_or_else(|| format!("{} has no address yet", device.display_name()))?;
+
+    file_sender
+        .send(SendInfo {
+            id: device.id.clone(),
+            name: device.display_name().to_owned(),
+            addr,
+            ob: OutboundPayload::Files(
+                paths
+                    .iter()
+                    .map(|path| path.to_string_lossy().into_owned())
+                    .collect(),
+            ),
+        })
+        .await
+        .map_err(|_| "the Quick Share service is not accepting transfers".to_owned())?;
+
+    Ok(device.id)
 }
 
 /// Stops and restarts the Quick Share service, unless a transfer is running.
