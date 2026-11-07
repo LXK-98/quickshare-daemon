@@ -107,9 +107,45 @@ was `53601` on both days, across seven sessions. What actually changed was the
 the thing I said it was, and under option B it is replaced by identity matching
 anyway.
 
-Still worth confirming deliberately rather than from logs taken for other
-purposes: two share sessions minutes apart, `avahi-browse` either side, checking
-the endpoint id holds. The sample above is suggestive, not controlled.
+### The controlled check, 2026-11-07 23:07–23:10
+
+Ran `avahi-browse` continuously while the sheet was opened, closed and reopened,
+logging every sighting. The sheet being closed shows up as a 41-second gap in
+which avahi lost the service entirely — so the sightings after it are a fresh
+resolution, not cache:
+
+```
+23:07:38  EXAMPLEENDPT02  192.0.2.129:53601
+   … through 23:08:09
+            (41s gap — sheet closed, service withdrawn)
+23:08:50  EXAMPLEENDPT02  192.0.2.129:53601
+   … through 23:09:38
+```
+
+**The endpoint id is unchanged across the cycle. So is the address, port
+included.** Exactly one distinct endpoint id and one distinct address in the
+whole capture.
+
+So option B has a principled identity: the first label of the mDNS `fullname`,
+which `rqs_lib` currently discards in favour of synthesising `ip:port`.
+
+**Scope of the claim.** One device, one network, one sitting. It establishes that
+the id survives a share session ending — the lifetime option B needs — and
+nothing more. The earlier observation that it differs between days and networks
+stands, which is why nothing should persist it.
+
+It also puts the "fresh port per session" assumption to rest for good: the port
+was identical either side of a deliberate close. That claim was wrong, and the
+IP-based dedup it justified needs its own rationale, which option B supersedes.
+
+### A note on method
+
+The first attempt at this check deduplicated sightings on
+`(endpoint, address, port)`. If the id is stable, that collapses both sessions
+into a single line — indistinguishable from having caught the device only once.
+The capture had to be rerun logging every sighting, where the gap carries the
+information. Worth remembering: when testing whether something *changes*,
+deduplicating is deleting the measurement.
 
 ### C. Expose the medium, let clients choose
 

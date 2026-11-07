@@ -3,6 +3,35 @@
 Per-session record: what was done, what is verified, what broke, what is next.
 Newest first.
 
+## 2026-11-07 — Endpoint id confirmed stable across a share session
+
+The controlled check TRANSPORT_IDENTITY.md called for. `avahi-browse` running
+continuously while the sheet was opened, closed and reopened; the close shows as
+a 41-second gap in which avahi lost the service, so what follows is a fresh
+resolution rather than cache.
+
+**Unchanged either side: endpoint id `EXAMPLEENDPT02` *and* address
+`192.0.2.129:53601`.** One distinct id and one distinct address in the entire
+capture.
+
+So option B has a principled identity — the first label of the mDNS `fullname`,
+which `rqs_lib` discards in favour of synthesising `ip:port`. The claim is
+narrow: one device, one network, one sitting, establishing only that the id
+survives a session ending, which is the lifetime needed.
+
+It also finishes off the "fresh port per session" assumption: the port was
+identical across a deliberate close/reopen. That was wrong, and the IP-based
+dedup it justified needs a different rationale — which option B replaces anyway.
+
+**A method mistake worth keeping.** The first capture deduplicated sightings on
+`(endpoint, address, port)`. If the id is stable, that collapses both sessions
+into one line, indistinguishable from having seen the device once — the script
+could not answer the question it was written for. Rerun logging every sighting,
+where the gap is the signal. When testing whether something changes,
+deduplicating is deleting the measurement.
+
+---
+
 ## 2026-11-07 — Design note: device identity across transports
 
 `docs/TRANSPORT_IDENTITY.md`. Written before any Bluetooth code because the

@@ -146,7 +146,9 @@ that shape any device picker built on it:
    — the port was `53601` every time. What changed was the **IP**, across
    networks. The id is still unsuitable as a device identity, for that reason
    rather than the one originally given. The real endpoint id is in the mDNS
-   `fullname` and *is* stable across sessions; discovery discards it. See
+   `fullname` and *is* stable across sessions — confirmed by a controlled
+   open/close/reopen check on 2026-11-07, where both the id and the port were
+   identical either side of a 41-second withdrawal. Discovery discards it. See
    docs/TRANSPORT_IDENTITY.md.
    (`id: ip_port` in the resolve branch.) It therefore **changes whenever the
    port changes**, and a phone picks a fresh port per share session. There is no
