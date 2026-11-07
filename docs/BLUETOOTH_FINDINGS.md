@@ -50,19 +50,56 @@ nothing resembling a Pixel appears in BlueZ's device list. The local adapter is
    did not. Either the model is wrong, or Android beacons only in states we did
    not reproduce — screen on, visibility set to everyone, Wi-Fi unavailable.
 
-## The cheapest next experiment
+## The inverted experiment, and why it was inconclusive
 
-Invert it: make **us** the discoverable one.
+Ran 2026-11-07: made the local adapter `Discoverable: yes` and `Pairable: yes`
+(BlueZ allows both over D-Bus without root), turned Wi-Fi off on the phone, and
+opened Quick Share.
 
-Register an RFCOMM profile with Quick Share's service UUID via BlueZ, make the
-adapter discoverable, turn Wi-Fi off on the phone, and see whether the phone
-offers this machine as a Quick Share target. That tests the listener half — the
-half we would have to implement anyway — and it needs one phone rather than two.
+**The machine did not appear in the phone's list.**
 
-If the phone finds us, discovery is its problem and ours is accepting the
-connection. If it does not, the Bluetooth medium needs protocol work that cannot
-be guessed at: a packet capture of a working Android-to-Android transfer with
-Wi-Fi disabled, using `btmon`, to see what actually happens on the wire.
+That was flagged as ambiguous before running it, and it is: we registered no
+Quick Share RFCOMM service, because **the service UUID is not in any source
+available here.** `rqs_lib` and Packet contain only `0xFE2C`, the BLE
+service-data UUID, and the proto carries the RFCOMM identity inside the
+*bandwidth upgrade* frame:
+
+```proto
+// Accompanies Medium.BLUETOOTH.
+message BluetoothCredentials {
+  optional string service_name = 1;
+  optional string mac_address = 2;
+}
+```
+
+So for a *bandwidth upgrade* the service name is negotiated per connection. For
+an initial Bluetooth-medium connection there must be a well-known UUID, and we
+do not have it. A device advertising no matching service is not expected to be
+offered, so the negative tells us little.
+
+The adapter was reverted to `Discoverable: no`, `Pairable: no` afterwards.
+
+## Where this leaves it: blocked on protocol knowledge, not on code
+
+The groundwork is done and useful regardless — the handshake is transport-generic
+(D-015), `Target` has a Bluetooth slot, `Medium::Bluetooth` is in the device
+model, and `Device.addresses` can hold a MAC. What is missing is knowing **what
+to advertise and what to connect to**, and that is not guessable.
+
+Three ways to get it, in order of cost:
+
+1. **Research the protocol.** Quick Share and Nearby Connections have been
+   reverse-engineered publicly. The specific wanted facts are the RFCOMM service
+   UUID for the `BLUETOOTH` medium, and whether discovery over that medium uses
+   classic inquiry, BLE GATT, or something else. No hardware needed.
+2. **`sudo btmon` while the phone attempts a Bluetooth transfer.** Needs root,
+   and needs the phone to have something to attempt *to* — which is the problem,
+   so this probably needs (3) as well.
+3. **A second Android device.** Capture a working Android-to-Android transfer
+   with Wi-Fi disabled on both. This is the one that definitively answers it,
+   and the only one that shows a working exchange rather than a failed attempt.
+
+Until one of those happens, further code would be guesswork.
 
 ## Method note
 

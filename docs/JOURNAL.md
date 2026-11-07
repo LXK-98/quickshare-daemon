@@ -28,12 +28,26 @@ nearby" four times in a minute. Only a wake-up hint, so the cost is wasted work
 rather than wrong behaviour, but distinguishing the payloads is a four-byte
 check.
 
-**Next experiment, and it is cheap:** invert it. Register an RFCOMM profile with
-Quick Share's UUID, make this adapter discoverable, turn the phone's Wi-Fi off,
-and see whether the phone offers us as a target. That tests the listener half —
-the half we would implement anyway — and needs one phone rather than two. If it
-fails, the medium needs a `btmon` capture of a working Android-to-Android
-transfer with Wi-Fi disabled, which is not something to guess at.
+**The inverted experiment ran, and was inconclusive.** Adapter set
+`Discoverable: yes` / `Pairable: yes` (BlueZ allows both over D-Bus without
+root), Wi-Fi off on the phone, Quick Share opened: the machine did not appear in
+the phone's list. Flagged as ambiguous before running and it is — **the RFCOMM
+service UUID is in no source available here.** `rqs_lib` and Packet have only
+`0xFE2C`, the BLE one, and the proto carries the RFCOMM identity inside the
+*bandwidth upgrade* frame (`BluetoothCredentials { service_name, mac_address }`),
+so it is negotiated per connection rather than well-known. A device advertising
+no matching service is not expected to be offered, so the negative says little.
+Adapter reverted afterwards.
+
+**So Bluetooth is blocked on protocol knowledge, not on code.** The groundwork
+holds and is useful regardless: the handshake is transport-generic, `Target` has
+a Bluetooth slot, `Medium::Bluetooth` is in the device model, `Device.addresses`
+can hold a MAC. What is missing is what to advertise and what to connect to, and
+that is not guessable. Three routes, cheapest first: research the public
+reverse-engineering of Nearby Connections' Bluetooth medium; `sudo btmon` (needs
+root, and needs the phone to have something to attempt *to*); or a second
+Android device to capture a working Wi-Fi-disabled transfer. Until one of those,
+further code would be guesswork.
 
 **Two method failures of mine, both self-inflicted and both caught.** The first
 scan deduplicated on `(id, address, port)`, hiding repetition. The second piped
