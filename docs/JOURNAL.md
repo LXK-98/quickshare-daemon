@@ -3,6 +3,48 @@
 Per-session record: what was done, what is verified, what broke, what is next.
 Newest first.
 
+## 2026-11-07 — The CLI is now a D-Bus client
+
+`devices` and `send` use the running daemon when there is one and fall back to
+their own short-lived service otherwise. That removes the duplicate mDNS stack,
+TCP listener and BLE advertiser that previously stood up beside the daemon's.
+
+**Two gaps this exposed in the API I had just written.**
+
+The daemon was **dropping outbound events entirely** — `handle_event` returned
+early on `TransferKind::Outbound` with a "Phase 3" note — so `TransferFinished`
+was declared but never emitted. The daemon now tracks outbound transfers and
+emits it, with the three-way `Disconnected` distinction the CLI already had:
+no PIN means the handshake failed, a PIN but no bytes means the receiver never
+accepted, bytes in flight means a real drop.
+
+And there was **no way for a client to learn the PIN**. It cannot be a
+`SendFiles` return value — it does not exist yet when that call returns, since
+it falls out of the key exchange afterwards. Added a `TransferPin(id, pin)`
+signal. Without it, moving the CLI onto the API would have silently lost the PIN
+display, which is the bug from 2026-10-01 all over again.
+
+**Verified.** `devices` via the daemon and via the fallback; `send` rejecting a
+missing file before touching the bus; `send` taking a lease and waiting for a
+device that is not there. And the crash path: killing the CLI mid-wait had the
+daemon's `NameOwnerChanged` watcher release its lease, which is precisely what
+that watcher is for.
+
+```
+started discovery                        holder=:1.1324
+client left the bus; released its lease  holder=:1.1324
+```
+
+File validation moved up into `send` so it happens once, before either path is
+chosen, rather than being duplicated.
+
+48/48 tests, clippy clean.
+
+**Not verified:** an actual transfer through `SendFiles`, including the
+`TransferPin` and `TransferFinished` signals. Needs the phone.
+
+---
+
 ## 2026-11-07 — D-Bus API, and a look at transports without a shared LAN
 
 **`org.quickshare.Daemon1` is live.** `StartDiscovery`, `StopDiscovery`,

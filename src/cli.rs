@@ -24,8 +24,258 @@ use rqs_lib::{EndpointInfo, OutboundPayload, RQS, SendInfo, TransferState, Visib
 use tokio::sync::broadcast;
 
 use crate::config::Config;
+use crate::dbus::{self, DaemonProxy, RemoteDevice, resolve_remote};
 use crate::devices::{Device, Registry};
 use crate::notify::format_bytes;
+
+/// Connects to a running daemon, or `None` if there is not one.
+///
+/// Preferred over the one-shot path whenever available: it avoids standing up a
+/// second mDNS stack, TCP listener and BLE advertiser alongside the daemon's,
+/// and it reuses discovery that may already be warm.
+async fn daemon() -> Option<DaemonProxy<'static>> {
+    let connection = zbus::Connection::session().await.ok()?;
+
+    // Asking the bus rather than calling a method and reading the error: "no
+    // daemon running" and "daemon returned an error" deserve different
+    // handling, and only this distinguishes them.
+    let bus = zbus::fdo::DBusProxy::new(&connection).await.ok()?;
+    if !bus
+        .name_has_owner(dbus::BUS_NAME.try_into().ok()?)
+        .await
+        .ok()?
+    {
+        return None;
+    }
+
+    match DaemonProxy::new(&connection).await {
+        Ok(proxy) => Some(proxy),
+        Err(err) => {
+            tracing::debug!("daemon is on the bus but unreachable: {err}");
+            None
+        }
+    }
+}
+
+/// Reads the daemon's device list.
+async fn remote_devices(proxy: &DaemonProxy<'_>) -> Result<Vec<RemoteDevice>> {
+    let dicts = proxy
+        .list_devices()
+        .await
+        .context("asking the daemon for its device list")?;
+    Ok(dicts.iter().filter_map(RemoteDevice::from_dict).collect())
+}
+
+/// Prints a device table, shared by both paths.
+fn print_devices(rows: impl IntoIterator<Item = (String, String, String)>) {
+    println!("{:<24}  {:<22}  ID", "NAME", "ADDRESS");
+    for (name, address, id) in rows {
+        println!("{name:<24}  {address:<22}  {id}");
+    }
+}
+
+/// Printed when nothing turned up, on either path.
+const NOTHING_FOUND: &str = "No devices found. Quick Share needs the other device's sheet to be \
+                             open: on Android, share something and leave the Quick Share picker \
+                             on screen.";
+
+/// `devices`, against a running daemon.
+async fn devices_via_daemon(proxy: &DaemonProxy<'_>, window: Duration) -> Result<()> {
+    proxy
+        .start_discovery()
+        .await
+        .context("asking the daemon to start discovery")?;
+    eprintln!(
+        "Looking for nearby devices for {}s (via the running daemon)…",
+        window.as_secs()
+    );
+
+    // Waits the whole window even once something appears: mDNS answers trickle
+    // in, and a list showing only the fastest responder is worse than one that
+    // took a few seconds.
+    tokio::time::sleep(window).await;
+
+    let found = remote_devices(proxy).await?;
+
+    // Released explicitly rather than left to the daemon noticing we exited.
+    // Same outcome, but it keeps the daemon's log honest about who wanted what.
+    let _ = proxy.stop_discovery().await;
+
+    if found.is_empty() {
+        eprintln!("{NOTHING_FOUND}");
+        return Ok(());
+    }
+
+    print_devices(found.into_iter().map(|device| {
+        let address = if device.reachable {
+            device.id.clone()
+        } else {
+            "-".to_owned()
+        };
+        (device.name, address, device.id)
+    }));
+    Ok(())
+}
+
+/// `send`, against a running daemon.
+async fn send_via_daemon(
+    proxy: &DaemonProxy<'_>,
+    target: &str,
+    files: &[PathBuf],
+    window: Duration,
+) -> Result<()> {
+    use futures_util::StreamExt;
+
+    // Subscribed before anything starts: a PIN or a failure arriving between
+    // SendFiles returning and a later subscription would be missed outright.
+    let mut pins = proxy
+        .receive_transfer_pin()
+        .await
+        .context("subscribing to TransferPin")?;
+    let mut finishes = proxy
+        .receive_transfer_finished()
+        .await
+        .context("subscribing to TransferFinished")?;
+
+    proxy
+        .start_discovery()
+        .await
+        .context("asking the daemon to start discovery")?;
+
+    let device = wait_for_remote(proxy, target, window).await;
+    let device = match device {
+        Ok(device) => device,
+        Err(err) => {
+            let _ = proxy.stop_discovery().await;
+            return Err(err);
+        }
+    };
+
+    let total: u64 = files
+        .iter()
+        .filter_map(|path| std::fs::metadata(path).ok())
+        .map(|metadata| metadata.len())
+        .sum();
+    eprintln!(
+        "Sending {} ({}) to {}…",
+        describe_files(files),
+        format_bytes(total),
+        device.name
+    );
+
+    let paths: Vec<String> = files
+        .iter()
+        .map(|path| path.to_string_lossy().into_owned())
+        .collect();
+    let borrowed: Vec<&str> = paths.iter().map(String::as_str).collect();
+
+    let transfer = proxy
+        .send_files(&device.id, &borrowed)
+        .await
+        .context("asking the daemon to send the files")?;
+    let _ = proxy.stop_discovery().await;
+
+    // Generous, because the other end has to accept by hand and a person
+    // reaching for their phone is slow.
+    const OVERALL_TIMEOUT: Duration = Duration::from_secs(300);
+
+    let outcome = tokio::time::timeout(OVERALL_TIMEOUT, async {
+        loop {
+            tokio::select! {
+                Some(signal) = pins.next() => {
+                    let Ok(args) = signal.args() else { continue };
+                    // Both streams carry every transfer's signals, not just ours.
+                    if args.id != transfer { continue; }
+                    eprintln!(
+                        "\n  ACCEPT ON {} — PIN {}\n  (check the device shows the same PIN)",
+                        device.name.to_uppercase(),
+                        args.pin
+                    );
+                }
+                Some(signal) = finishes.next() => {
+                    let Ok(args) = signal.args() else { continue };
+                    if args.id != transfer { continue; }
+                    return if args.succeeded {
+                        Ok(())
+                    } else {
+                        Err(anyhow::anyhow!("{}", args.error))
+                    };
+                }
+                else => return Err(anyhow::anyhow!("the daemon stopped reporting")),
+            }
+        }
+    })
+    .await;
+
+    match outcome {
+        Ok(Ok(())) => {
+            eprintln!("Sent to {}.", device.name);
+            Ok(())
+        }
+        Ok(Err(err)) => Err(err),
+        Err(_) => bail!(
+            "gave up waiting after {}s; {} never completed the transfer",
+            OVERALL_TIMEOUT.as_secs(),
+            device.name
+        ),
+    }
+}
+
+/// Waits for `target` to show up in the daemon's device list.
+async fn wait_for_remote(
+    proxy: &DaemonProxy<'_>,
+    target: &str,
+    deadline: Duration,
+) -> Result<RemoteDevice> {
+    use futures_util::StreamExt;
+
+    let mut changes = proxy
+        .receive_devices_changed()
+        .await
+        .context("subscribing to DevicesChanged")?;
+    let until = tokio::time::Instant::now() + deadline;
+    let mut announced = false;
+
+    loop {
+        let devices = remote_devices(proxy).await?;
+        match resolve_remote(&devices, target) {
+            // Only a reachable device will do: one without an address cannot be
+            // connected to, so reporting it found would fail a moment later.
+            Ok(Some(device)) if device.reachable => return Ok(device),
+            Err(ambiguous) => bail!(ambiguous),
+            _ => {}
+        }
+
+        let remaining = until.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            let devices = remote_devices(proxy).await?;
+            if devices.is_empty() {
+                bail!("no devices found; is the other device's Quick Share sheet open?");
+            }
+            bail!(
+                "no reachable device matching {target:?}. Found: {}",
+                devices
+                    .iter()
+                    .map(|device| device.name.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
+        }
+
+        if !announced {
+            eprintln!(
+                "Waiting up to {}s for {target}. Open its Quick Share sheet now if it is not \
+                 already open.",
+                deadline.as_secs()
+            );
+            announced = true;
+        }
+
+        // Re-reads on every change rather than tracking deltas, which is what
+        // DevicesChanged carrying no payload is for.
+        let _ = tokio::time::timeout(remaining, changes.next()).await;
+    }
+}
 
 /// A started service, plus the channels needed to drive it.
 struct Session {
@@ -108,7 +358,18 @@ async fn discover(session: &mut Session, window: Duration, verbose: bool) -> Reg
 }
 
 /// `quickshare-daemon devices` — list what is nearby.
+///
+/// Uses the running daemon when there is one, and otherwise stands up its own
+/// short-lived service.
 pub async fn devices(window: Duration) -> Result<()> {
+    if let Some(proxy) = daemon().await {
+        return devices_via_daemon(&proxy, window).await;
+    }
+    devices_standalone(window).await
+}
+
+/// `devices` without a daemon: our own short-lived service.
+async fn devices_standalone(window: Duration) -> Result<()> {
     let mut session = start_session().await?;
     eprintln!("Looking for nearby devices for {}s…", window.as_secs());
 
@@ -118,22 +379,17 @@ pub async fn devices(window: Duration) -> Result<()> {
     session.rqs.stop().await;
 
     if found.is_empty() {
-        eprintln!(
-            "No devices found. Quick Share needs the other device's sheet to be open: \
-             on Android, share something and leave the Quick Share picker on screen."
-        );
+        eprintln!("{NOTHING_FOUND}");
         return Ok(());
     }
 
-    println!("{:<24}  {:<22}  ID", "NAME", "ADDRESS");
-    for device in found {
-        println!(
-            "{:<24}  {:<22}  {}",
-            device.display_name(),
-            device.addr.as_deref().unwrap_or("-"),
+    print_devices(found.into_iter().map(|device| {
+        (
+            device.display_name().to_owned(),
+            device.addr.clone().unwrap_or_else(|| "-".to_owned()),
             device.id,
-        );
-    }
+        )
+    }));
 
     Ok(())
 }
@@ -248,14 +504,16 @@ async fn find_target(session: &mut Session, target: &str, deadline: Duration) ->
 }
 
 /// `quickshare-daemon send <target> <files…>` — send files to one device.
+///
+/// Uses the running daemon when there is one, and otherwise stands up its own
+/// short-lived service.
 pub async fn send(target: &str, files: Vec<PathBuf>, window: Duration) -> Result<()> {
     if files.is_empty() {
         bail!("no files given");
     }
 
-    // Checked before starting a service: a typo in a filename should fail
-    // immediately, not after ten seconds of discovery.
-    let mut total_bytes = 0u64;
+    // Checked here, before either path, so a typo fails immediately rather
+    // than after the daemon has been asked to discover anything.
     for file in &files {
         let metadata =
             std::fs::metadata(file).with_context(|| format!("cannot send {}", file.display()))?;
@@ -265,8 +523,22 @@ pub async fn send(target: &str, files: Vec<PathBuf>, window: Duration) -> Result
                 file.display()
             );
         }
-        total_bytes += metadata.len();
     }
+
+    if let Some(proxy) = daemon().await {
+        return send_via_daemon(&proxy, target, &files, window).await;
+    }
+    send_standalone(target, files, window).await
+}
+
+/// `send` without a daemon: our own short-lived service.
+async fn send_standalone(target: &str, files: Vec<PathBuf>, window: Duration) -> Result<()> {
+    // Already validated by `send`, which checks before choosing a path.
+    let total_bytes: u64 = files
+        .iter()
+        .filter_map(|path| std::fs::metadata(path).ok())
+        .map(|metadata| metadata.len())
+        .sum();
 
     let mut session = start_session().await?;
 

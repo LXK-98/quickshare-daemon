@@ -233,6 +233,108 @@ impl Daemon1 {
         succeeded: bool,
         error: &str,
     ) -> zbus::Result<()>;
+
+    /// The PIN for a transfer, as soon as the handshake derives one.
+    ///
+    /// A separate signal rather than a `SendFiles` return value, because the
+    /// PIN does not exist yet when that call returns: it falls out of the key
+    /// exchange, which happens afterwards. A client must show it — it is how
+    /// the person at the other device confirms the transfer is really from
+    /// here, and nothing can be accepted until they do.
+    #[zbus(signal)]
+    pub async fn transfer_pin(emitter: &SignalEmitter<'_>, id: &str, pin: &str)
+    -> zbus::Result<()>;
+}
+
+#[zbus::proxy(
+    interface = "org.quickshare.Daemon1",
+    default_service = "org.quickshare.Daemon1",
+    default_path = "/org/quickshare/Daemon1"
+)]
+pub trait Daemon {
+    fn start_discovery(&self) -> zbus::Result<()>;
+    fn stop_discovery(&self) -> zbus::Result<()>;
+    fn list_devices(&self) -> zbus::Result<Vec<HashMap<String, OwnedValue>>>;
+    fn send_files(&self, target: &str, paths: &[&str]) -> zbus::Result<String>;
+
+    #[zbus(property)]
+    fn visible(&self) -> zbus::Result<bool>;
+    #[zbus(property)]
+    fn set_visible(&self, visible: bool) -> zbus::Result<()>;
+
+    #[zbus(signal)]
+    fn devices_changed(&self) -> zbus::Result<()>;
+    #[zbus(signal)]
+    fn transfer_finished(&self, id: String, succeeded: bool, error: String) -> zbus::Result<()>;
+    #[zbus(signal)]
+    fn transfer_pin(&self, id: String, pin: String) -> zbus::Result<()>;
+}
+
+/// One device as seen by a client, read back out of a [`device_dict`].
+#[derive(Debug, Clone)]
+pub struct RemoteDevice {
+    pub id: String,
+    pub name: String,
+    pub reachable: bool,
+}
+
+impl RemoteDevice {
+    /// Reads one dict from `ListDevices`.
+    ///
+    /// Missing or mistyped fields are tolerated rather than fatal: the contract
+    /// allows adding fields, so a client that hard-failed on anything
+    /// unexpected would break on the next extension.
+    pub fn from_dict(dict: &HashMap<String, OwnedValue>) -> Option<Self> {
+        let string = |key: &str| -> Option<String> {
+            dict.get(key)
+                .and_then(|value| value.try_clone().ok())
+                .and_then(|value| String::try_from(value).ok())
+        };
+
+        Some(Self {
+            id: string("id")?,
+            name: string("name").unwrap_or_else(|| "Unknown device".to_owned()),
+            reachable: dict
+                .get("reachable")
+                .and_then(|value| value.try_clone().ok())
+                .and_then(|value| bool::try_from(value).ok())
+                .unwrap_or(false),
+        })
+    }
+}
+
+/// Picks the one device matching `target`, by id or by name.
+///
+/// Mirrors the daemon's own resolution, and like it refuses to guess: sending a
+/// file to the wrong device cannot be undone. Returns `Ok(None)` when nothing
+/// matches yet, so a caller can keep waiting, and `Err` only when the answer is
+/// ambiguous and waiting longer cannot help.
+pub fn resolve_remote(
+    devices: &[RemoteDevice],
+    target: &str,
+) -> Result<Option<RemoteDevice>, String> {
+    if let Some(found) = devices.iter().find(|device| device.id == target) {
+        return Ok(Some(found.clone()));
+    }
+
+    let wanted = target.to_lowercase();
+    let matches: Vec<&RemoteDevice> = devices
+        .iter()
+        .filter(|device| device.name.to_lowercase() == wanted)
+        .collect();
+
+    match matches.as_slice() {
+        [] => Ok(None),
+        [only] => Ok(Some((*only).clone())),
+        many => Err(format!(
+            "{} devices are called {target:?}; use an id instead:\n{}",
+            many.len(),
+            many.iter()
+                .map(|device| format!("  {}  {}", device.id, device.name))
+                .collect::<Vec<_>>()
+                .join("\n")
+        )),
+    }
 }
 
 #[cfg(test)]

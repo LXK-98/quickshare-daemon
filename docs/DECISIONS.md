@@ -363,6 +363,26 @@ lets a handler report the real outcome instead of acknowledging blindly.
 error: a second daemon, or a session without a bus, should still receive files.
 It simply cannot be driven remotely.
 
+**`TransferPin` is a signal, not a return value.** The PIN does not exist when
+`SendFiles` returns — it falls out of the key exchange, which happens
+afterwards. A client must show it: it is how the person at the other device
+confirms the transfer is really from here, and nothing can be accepted until
+they do. Added 2026-11-07 when the CLI became a client and would otherwise have
+lost the PIN display it already had.
+
+**The CLI prefers the daemon and falls back.** `devices` and `send` ask the bus
+whether `org.quickshare.Daemon1` has an owner; if so they drive it, and
+otherwise they stand up their own short-lived service as before. Asking the bus
+rather than calling a method and interpreting the error is deliberate: "no
+daemon running" and "the daemon returned an error" deserve different handling,
+and only `NameHasOwner` distinguishes them.
+
+Using the daemon avoids a second mDNS stack, a second TCP listener and a second
+BLE advertiser standing up alongside the daemon's, and reuses discovery that may
+already be warm. Keeping the fallback means the CLI still works on a machine
+where the service is not enabled, which is how PLAN.md describes it being used
+for scripting.
+
 **Verified 2026-11-07** against the live session bus: introspection shows the
 full interface, `Visible` reads, `ListDevices` returns `aa{sv}`,
 `StartDiscovery` attributes a lease to `:1.1314`, that client's departure

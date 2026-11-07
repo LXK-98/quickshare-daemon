@@ -185,15 +185,16 @@ daemon's footprint.
       `org.quickshare.Daemon1`, verified against the live session bus including
       refcounted discovery leases released on client departure (D-013).
       `SendFiles` itself has not yet been driven through to a real transfer
-- [~] Outbound transfers with progress/result notifications — the outbound
-      path is written and reports progress on the CLI; desktop notifications for
-      it wait on the daemon-side integration, and nothing has been sent yet
+- [~] Outbound transfers with progress/result notifications — the outbound path
+      works and the daemon now reports it over D-Bus (`TransferPin`,
+      `TransferFinished`). **Desktop notifications for outbound transfers are
+      still not posted** — only the CLI reports them
 - [ ] Nautilus extension with device submenu (or zenity fallback)
-- [~] Small CLI: `quickshare-daemon send <files>` / `devices` for scripting —
-      both exist and `devices` is verified working. They run their own
-      short-lived service rather than talking to a running daemon; becoming
-      thin D-Bus clients waits on the API above. **`send` has never
-      successfully sent a file** — needs a second device
+- [x] Small CLI: `quickshare-daemon send <files>` / `devices` for scripting —
+      both drive the running daemon over D-Bus when there is one, and fall back
+      to their own short-lived service otherwise. Verified on both paths; a
+      transfer driven through `SendFiles` has not been confirmed against a real
+      device yet
 
 ### Phase 4 — Memory tuning & packaging (~0.5 day)
 

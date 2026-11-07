@@ -300,6 +300,8 @@ async fn run() -> Result<()> {
     let mut restart_pending = false;
 
     let mut registry = Registry::default();
+    // Outbound transfers we started on a client's behalf.
+    let mut outbound: HashMap<String, OutboundTransfer> = HashMap::new();
     // Discovery's event channel. Created once and kept for the daemon's life:
     // `rqs.discovery()` takes a sender each time it starts, and reusing one
     // keeps our receiver valid across stop/start cycles.
@@ -376,7 +378,16 @@ async fn run() -> Result<()> {
         tokio::select! {
             event = events.recv() => match event {
                 Ok(message) => {
-                    handle_event(&message, &config, &notifier, &actions, &mut active).await;
+                    handle_event(
+                        &message,
+                        &config,
+                        &notifier,
+                        &actions,
+                        &mut active,
+                        emitter.as_ref(),
+                        &mut outbound,
+                    )
+                    .await;
 
                     // The deferred restart from a reconnect or a SIGHUP that
                     // arrived mid-transfer. `active` empties only here, so this
@@ -804,12 +815,15 @@ async fn restart_service(
 /// Consent is delivered back through the *same* broadcast channel the events
 /// arrive on ([`Message::Lib`]), which means our own replies are echoed back to
 /// us. Handling only [`Message::Client`] is what keeps that from looping.
+#[allow(clippy::too_many_arguments)]
 async fn handle_event(
     message: &ChannelMessage,
     config: &Config,
     notifier: &Arc<Notifier>,
     actions: &Sender<ChannelMessage>,
     active: &mut HashMap<String, ActiveTransfer>,
+    emitter: Option<&zbus::object_server::SignalEmitter<'_>>,
+    outbound: &mut HashMap<String, OutboundTransfer>,
 ) {
     let Some(client) = message.msg.as_client() else {
         // Our own `Message::Lib` reply, echoed back by the broadcast channel.
@@ -823,11 +837,11 @@ async fn handle_event(
         metadata,
     } = client;
 
-    // Outbound transfers are Phase 3. Until then they cannot happen, but
-    // reacting to them as if they were inbound would be worse than ignoring
-    // them.
+    // Outbound transfers report over D-Bus instead of through a consent
+    // prompt: the person being asked to accept is at the *other* device, so
+    // there is nothing to ask here.
     if *kind == TransferKind::Outbound {
-        tracing::debug!(%id, ?state, "ignoring outbound transfer event (Phase 3)");
+        handle_outbound_event(id, client, emitter, outbound).await;
         return;
     }
 
@@ -1077,6 +1091,81 @@ fn spawn_received_files_notification(notifier: Arc<Notifier>, source: String, pa
             None => {}
         }
     });
+}
+
+/// What the daemon tracks about an outbound transfer it started.
+///
+/// Only enough to report it: the PIN must be announced exactly once, and
+/// whether any bytes moved is what distinguishes "the receiver never accepted"
+/// from "the connection dropped" — both of which arrive as `Disconnected`. See
+/// docs/RQS_LIB_NOTES.md.
+#[derive(Debug, Default)]
+struct OutboundTransfer {
+    pin_announced: bool,
+    started_sending: bool,
+}
+
+/// Reports an outbound transfer's progress over D-Bus.
+///
+/// `rqs_lib`'s outbound path never emits `WaitingForUserConsent`, so the PIN
+/// has to be picked out of whichever state change happens to carry it.
+async fn handle_outbound_event(
+    id: &str,
+    client: &MessageClient,
+    emitter: Option<&zbus::object_server::SignalEmitter<'_>>,
+    outbound: &mut HashMap<String, OutboundTransfer>,
+) {
+    let state = client.state.clone().unwrap_or_default();
+    let entry = outbound.entry(id.to_owned()).or_default();
+
+    if !entry.pin_announced {
+        if let Some(pin) = client.metadata.as_ref().and_then(|m| m.pin_code.as_deref()) {
+            entry.pin_announced = true;
+            tracing::info!(%id, %pin, "outbound transfer awaiting acceptance");
+            if let Some(emitter) = emitter {
+                if let Err(err) = Daemon1::transfer_pin(emitter, id, pin).await {
+                    tracing::debug!("could not emit TransferPin: {err}");
+                }
+            }
+        }
+    }
+
+    let finish = |succeeded: bool, error: String| (succeeded, error);
+    let outcome = match state {
+        TransferState::SendingFiles => {
+            entry.started_sending = true;
+            None
+        }
+        TransferState::Finished => Some(finish(true, String::new())),
+        TransferState::Rejected => Some(finish(false, "the device declined the transfer".into())),
+        TransferState::Cancelled => Some(finish(false, "the transfer was cancelled".into())),
+        // One state, two causes, told apart by how far it got. No PIN at all
+        // means the key exchange failed rather than anyone refusing.
+        TransferState::Disconnected if !entry.pin_announced => Some(finish(
+            false,
+            "the connection failed during the encrypted handshake".into(),
+        )),
+        TransferState::Disconnected if !entry.started_sending => Some(finish(
+            false,
+            "the device never accepted the transfer -- it timed out, or was declined".into(),
+        )),
+        TransferState::Disconnected => {
+            Some(finish(false, "the device disconnected mid-transfer".into()))
+        }
+        _ => None,
+    };
+
+    let Some((succeeded, error)) = outcome else {
+        return;
+    };
+
+    outbound.remove(id);
+    tracing::info!(%id, succeeded, error = %error, "outbound transfer ended");
+    if let Some(emitter) = emitter {
+        if let Err(err) = Daemon1::transfer_finished(emitter, id, succeeded, &error).await {
+            tracing::debug!("could not emit TransferFinished: {err}");
+        }
+    }
 }
 
 /// A short phrase for what is being sent, for the consent prompt.
