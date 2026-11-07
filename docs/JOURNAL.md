@@ -3,6 +3,50 @@
 Per-session record: what was done, what is verified, what broke, what is next.
 Newest first.
 
+## 2026-11-07 — Bluetooth discovery investigated: the plan was wrong
+
+Full writeup in `docs/BLUETOOTH_FINDINGS.md`. Investigated before writing
+transport code, which was the right call: **BLE discovery cannot produce a MAC
+to connect to, as I had sketched it.**
+
+**What works:** a MAC *is* available from a BLE advertisement, and `rqs_lib`'s
+`BleListener` already receives it in `ServiceDataAdvertisement { id, .. }` and
+throws it away. Extracting it would be trivial.
+
+**What does not:** the phone emits no Quick Share BLE advertisement while its
+share sheet is open. Sixty seconds of scanning produced zero payloads in the
+format `rqs_lib` itself advertises (`fc 12 8e 01 …`). The four `0xFE2C`
+advertisements seen were all 19 bytes beginning `10 52`, from two addresses that
+both resolve to the same Sony earbuds — the second being a randomised address
+for the same device. Nothing from the phone, and no classic Bluetooth presence
+for it either.
+
+`0xFE2C` is Google's Fast Pair UUID, which Quick Share shares, so the UUID alone
+does not identify Quick Share traffic. **Which means `rqs_lib`'s `BleListener`
+reports false positives** — it read a pair of earbuds as "a device is sharing
+nearby" four times in a minute. Only a wake-up hint, so the cost is wasted work
+rather than wrong behaviour, but distinguishing the payloads is a four-byte
+check.
+
+**Next experiment, and it is cheap:** invert it. Register an RFCOMM profile with
+Quick Share's UUID, make this adapter discoverable, turn the phone's Wi-Fi off,
+and see whether the phone offers us as a target. That tests the listener half —
+the half we would implement anyway — and needs one phone rather than two. If it
+fails, the medium needs a `btmon` capture of a working Android-to-Android
+transfer with Wi-Fi disabled, which is not something to guess at.
+
+**Two method failures of mine, both self-inflicted and both caught.** The first
+scan deduplicated on `(id, address, port)`, hiding repetition. The second piped
+the probe through `tail -70`, which discarded exactly the UUID lines the
+question turned on — and I briefly read a "zero Quick Share payloads" count off
+that truncated output, which was meaningless. Same pattern as the earlier
+endpoint-id capture: when the question is whether something appears, filtering
+the output before looking at it destroys the measurement.
+
+Probe kept at `docs/ble-probe.rs`.
+
+---
+
 ## 2026-11-07 — Option B: identity separated from address
 
 Implemented the design note's recommendation. D-016 has the detail; the shape

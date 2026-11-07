@@ -342,6 +342,21 @@ in the journal. Fixed in our fork (`cf71b1b`) by extending the `Finished` check
 those sites already make — they suppress the synthetic `Disconnected` message
 for it — to the log line too. Still present upstream.
 
+## BleListener reports false positives
+
+`hdl/ble.rs` treats any advertisement on service UUID `0xFE2C` as "a device is
+sharing nearby". `0xFE2C` is Google's **Fast Pair** UUID, which Quick Share
+shares, so Fast Pair beacons from unrelated hardware trigger it — observed four
+times in one 60-second window, all from a pair of Sony earbuds.
+
+The payloads are distinguishable: Quick Share's is 26 bytes beginning
+`fc 12 8e 01` (the constant in `hdl/blea.rs`), Fast Pair's were 19 bytes
+beginning `10 52`. A four-byte check would separate them.
+
+The signal is only used as a wake-up hint, so the cost is wasted work rather
+than wrong behaviour. Not yet fixed in our fork. See
+docs/BLUETOOTH_FINDINGS.md.
+
 ## Discovery contacts every device it finds
 
 Worth stating plainly, because "discovery" sounds passive: `MDnsDiscovery` only
