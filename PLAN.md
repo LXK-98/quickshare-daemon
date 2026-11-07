@@ -150,8 +150,8 @@ daemon's footprint.
       "Open" on a URL needs a scheme allowlist before handing a
       remote-supplied string to `xdg-open`, and "Copy" needs a Wayland
       clipboard path, which a daemon with no window does not get for free
-- [~] Completion/failure notifications — written, not exercised by a real
-      transfer
+- [x] Completion/failure notifications — inbound ones written but still not
+      exercised by a real received transfer; outbound confirmed on 2026-11-07
 - [x] systemd user unit (`quickshare-daemon.service`) — written, not yet
       installed or tested
 - [x] **Checkpoint:** idle RSS/PSS measured — **6.2 MB RSS / 3.5 MB PSS /
@@ -181,11 +181,10 @@ daemon's footprint.
 
 ### Phase 3 — Sending (~1–2 days)
 
-> **Sending has never completed successfully end to end.** Every byte reaches
-> the phone and our side reports `Finished`, but the receiver has reported a
-> failure every time. D-014 identifies a race between `Finished` and the
-> graceful Disconnection frame as the mechanism, fixed in the fork and worked
-> around here, but that is untested against a real device.
+> **Sending works, confirmed on the receiving device** (2026-11-07): a file sent
+> from the daemon arrived on a Pixel 6a with its contents readable, driven
+> through the D-Bus API with the PIN notification on screen. It took two fixes
+> in a fork of `rqs_lib` to get there — D-012 and D-014.
 
 - [x] D-Bus API: `StartDiscovery`, `ListDevices`, `SendFiles`, `Visibility` —
       `org.quickshare.Daemon1`, verified against the live session bus including
@@ -199,9 +198,8 @@ daemon's footprint.
 - [ ] Nautilus extension with device submenu (or zenity fallback)
 - [x] Small CLI: `quickshare-daemon send <files>` / `devices` for scripting —
       both drive the running daemon over D-Bus when there is one, and fall back
-      to their own short-lived service otherwise. Verified on both paths; a
-      transfer driven through `SendFiles` has not been confirmed against a real
-      device yet
+      to their own short-lived service otherwise. Verified on both paths, and a
+      transfer driven through `SendFiles` confirmed on the receiving device
 
 ### Phase 4 — Memory tuning & packaging (~0.5 day)
 

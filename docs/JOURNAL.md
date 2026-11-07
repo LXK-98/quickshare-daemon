@@ -3,6 +3,45 @@
 Per-session record: what was done, what is verified, what broke, what is next.
 Newest first.
 
+## 2026-11-07 — Sending works end to end, confirmed on the device
+
+A file sent from the daemon arrived on the Pixel 6a, with the PIN notification
+on screen and the contents readable. **First confirmed successful send**, and
+the receiving end is the one saying so this time.
+
+One run validated four things at once:
+
+- **D-014's hypothesis.** The race between `Finished` and the Disconnection
+  frame was the cause. With the fork's reordering the frame goes out first, the
+  daemon no longer tears down underneath it, and the transfer lands. Promoted
+  from "hypothesis with a mechanism" to confirmed.
+- **The fork** (D-012, D-014) — both fixes in a real handshake.
+- **The D-Bus chain** — `SendFiles` → `TransferPin` → `TransferFinished`,
+  driven by the CLI as a client, with a discovery lease taken and released.
+- **Outbound notifications** — the PIN notification reached the screen, which
+  is the whole reason it exists: a client sending from a file manager has
+  nowhere else to put it.
+
+Daemon log for the record:
+
+```
+started discovery holder=:1.1366
+outbound transfer awaiting acceptance id=192.0.2.129:53601 pin=4517
+All files have been transferred
+outbound transfer ended id=192.0.2.129:53601 succeeded=true error=
+ERROR rqs_lib::manager: TcpServer: error while handling client: early eof (Finished)
+```
+
+That last line is `rqs_lib` reading the socket after the exchange and finding
+the peer had hung up. Benign — the transfer had already succeeded — but it logs
+at ERROR, so it will look alarming in a journal and is worth silencing in the
+fork at some point.
+
+Idle with the D-Bus API served: **7.1 MB RSS / 4.3 MB PSS / 1.0 MB private
+dirty / 3 threads**.
+
+---
+
 ## 2026-11-07 — A byte-complete transfer still failed on the phone
 
 A 39-byte send reported the PIN, every byte acknowledged, `All files have been

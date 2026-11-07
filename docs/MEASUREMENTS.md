@@ -47,8 +47,14 @@ on (both BLE stacks), `current_thread` runtime. Measured externally from
 | 2026-09-30 | debug   | 15.9 MB| 13.1 MB| 13.1 MB   | 3       |
 | 2026-09-30 | release | 6.2 MB | 3.5 MB | 0.8 MB    | 2       |
 | 2026-11-07 | release | 6.7 MB | 4.0 MB | 4.0 MB    | 3       |
+| 2026-11-07 | release | 7.1 MB | 4.3 MB | 1.0 MB    | 3       |
 
-The 2026-11-07 row is with the D-Bus API served: `zbus` adds a task and a
+Both 2026-11-07 rows are with the D-Bus API served. The second is a later run
+whose private-dirty figure (1.0 MB) is the believable one; the first row's
+4.0 MB was a single reading taken 5 s after start, during the inflation warned
+about below.
+
+The 2026-11-07 rows are with the D-Bus API served: `zbus` adds a task and a
 session-bus connection, costing ~0.5 MB RSS and one thread. Still inside the
 8 MB ceiling. Note its private-dirty figure is a single reading taken 5 s after
 start, so it is subject to the start-up inflation warned about below; the

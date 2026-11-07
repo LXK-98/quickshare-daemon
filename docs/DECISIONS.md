@@ -366,10 +366,10 @@ sender's own loop; nothing in it is a report from the receiving application
 (RQS_LIB_NOTES.md says so). Treating it as proof of delivery is what produced
 three separate claims of success in this project against a phone that disagreed.
 
-**Status: a hypothesis with a mechanism, not a confirmed fix.** The race is real
-and demonstrable from the source, and it explains a byte-complete transfer
-failing at the receiver. Whether it is the *only* cause of the Pixel's error is
-unverified until a transfer actually lands.
+**Status: confirmed.** With the fork's reordering in place and the daemon left
+running, a file sent to the Pixel 6a arrived and its contents were readable.
+The race was the cause, and it was the only one: nothing else changed between
+the failing run and the succeeding one.
 
 ---
 
