@@ -207,6 +207,21 @@ it, a disconnect means the receiver never accepted.
 receiver that accepts and then fails to store the file still leaves us at
 `Finished`.
 
+**Upstream also announces `Finished` before sending the Disconnection frame**,
+which makes acting on it immediately unsafe:
+
+```rust
+self.update_state(|e| e.state = TransferState::Finished, true).await;
+self.disconnection().await?;
+```
+
+A client that stops its service on hearing `Finished` cancels the task that
+would send that frame, and the receiver treats a connection lost without a clean
+close as a failed transfer even having taken every byte. Observed against a
+Pixel 6a on 2026-11-07. Fixed in our fork by swapping the two statements
+(`7725c0b`); still present in both `nozwock` and `Martichou`. Any client on
+unpatched `rqs_lib` must wait before tearing down.
+
 ## Upstream bug: short EC coordinates break the handshake
 
 **Symptom:** `TcpServer: error while handling client: elliptic curve point

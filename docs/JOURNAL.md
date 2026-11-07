@@ -3,6 +3,43 @@
 Per-session record: what was done, what is verified, what broke, what is next.
 Newest first.
 
+## 2026-11-07 — A byte-complete transfer still failed on the phone
+
+A 39-byte send reported the PIN, every byte acknowledged, `All files have been
+transferred` and `Finished` — and the Pixel showed a transfer error. Third time
+I have reported a send as successful on the strength of our own terminal state
+and been wrong.
+
+**Mechanism found.** `rqs_lib`'s outbound loop announces `Finished` *before*
+sending its graceful Disconnection frame. The CLI sees `Finished`, returns, and
+calls `rqs.stop()`, which cancels the very task that would send that frame. The
+receiver loses the connection without a clean close and marks the transfer
+failed, having taken every byte. Visible in the log: `All files have been
+transferred` → `Sent to…` → `tracker cancelled`, within milliseconds.
+
+**Fixed in two places.** The fork swaps the two statements, so `Finished` means
+the protocol completed rather than that the last byte was written (`7725c0b`,
+now pinned). And both the CLI's one-shot path and the daemon's shutdown wait a
+second before stopping when a transfer has just completed — which covers the
+window whatever revision is underneath, and matters because the pin will move
+and this failure is silent on our side. D-014.
+
+**This is a hypothesis with a mechanism, not a confirmed fix.** The race is real
+and readable in the source, and it explains the symptom. Whether it is the only
+cause is unknown until something actually lands on the phone.
+
+**Also explained: no notifications.** That run went through the *standalone*
+path — no daemon was up, so the CLI stood up its own service and printed to the
+terminal. Only the daemon posts notifications. Not a bug, but it means the
+outbound notification integration is still unexercised, and I should have said
+so when suggesting the test rather than implying it would cover them.
+
+**Correction to an earlier claim.** I called Phase 3 "complete except the
+Nautilus extension". Sending has never once succeeded end to end, so that was
+wrong.
+
+---
+
 ## 2026-11-07 — Outbound notifications in the daemon
 
 An outbound transfer now produces **one** desktop notification, updated in

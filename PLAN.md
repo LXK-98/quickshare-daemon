@@ -181,6 +181,12 @@ daemon's footprint.
 
 ### Phase 3 — Sending (~1–2 days)
 
+> **Sending has never completed successfully end to end.** Every byte reaches
+> the phone and our side reports `Finished`, but the receiver has reported a
+> failure every time. D-014 identifies a race between `Finished` and the
+> graceful Disconnection frame as the mechanism, fixed in the fork and worked
+> around here, but that is untested against a real device.
+
 - [x] D-Bus API: `StartDiscovery`, `ListDevices`, `SendFiles`, `Visibility` —
       `org.quickshare.Daemon1`, verified against the live session bus including
       refcounted discovery leases released on client departure (D-013).

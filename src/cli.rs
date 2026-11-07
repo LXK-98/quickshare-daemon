@@ -583,6 +583,19 @@ async fn send_standalone(target: &str, files: Vec<PathBuf>, window: Duration) ->
         .context("handing the files to the Quick Share service")?;
 
     let outcome = follow_transfer(&mut events, &device).await;
+
+    // `rqs_lib` reports a transfer finished and only then sends its graceful
+    // Disconnection frame, and `stop()` cancels the task that would send it.
+    // Stopping the instant we hear "Finished" therefore raced that frame, and a
+    // receiver that loses the connection without one marks the transfer failed
+    // even having taken every byte -- which is what a Pixel 6a did on
+    // 2026-11-07. Our fork reorders those two steps; this grace covers the
+    // window regardless, and costs a second on a path that already waited for
+    // a human.
+    if outcome.is_ok() {
+        tokio::time::sleep(Duration::from_secs(1)).await;
+    }
+
     session.rqs.stop().await;
     outcome
 }

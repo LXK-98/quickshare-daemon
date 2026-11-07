@@ -20,9 +20,10 @@ futures-util = { version = "0.3", default-features = false }
 # spelled out here so a change upstream cannot silently alter our build).
 #
 # Our own fork, branched at nozwock's `17702ed` -- the rev Packet is tested
-# against -- carrying exactly one commit: the P-256 coordinate padding fix that
-# both nozwock and Martichou still ship broken. See docs/DECISIONS.md#d-012.
-rqs_lib = { git = "https://github.com/LXK-98/rquickshare.git", rev = "7b42f7d94869f2b4570f4fe1c97a989cbb377797", default-features = false, features = [
+# against -- carrying two fixes upstream still ships broken: the P-256
+# coordinate padding (docs/DECISIONS.md#d-012) and the Disconnection frame being
+# sent after Finished is announced rather than before (D-014).
+rqs_lib = { git = "https://github.com/LXK-98/rquickshare.git", rev = "7725c0b2f7a95c82217aa72d4f901857bd75e701", default-features = false, features = [
     "experimental",
 ] }
 

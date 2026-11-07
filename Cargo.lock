@@ -1607,7 +1607,7 @@ dependencies = [
 [[package]]
 name = "rqs_lib"
 version = "0.11.5"
-source = "git+https://github.com/LXK-98/rquickshare.git?rev=7b42f7d94869f2b4570f4fe1c97a989cbb377797#7b42f7d94869f2b4570f4fe1c97a989cbb377797"
+source = "git+https://github.com/LXK-98/rquickshare.git?rev=7725c0b2f7a95c82217aa72d4f901857bd75e701#7725c0b2f7a95c82217aa72d4f901857bd75e701"
 dependencies = [
  "anyhow",
  "base64",

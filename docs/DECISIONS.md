@@ -327,6 +327,52 @@ a file you need to look at before running.
 
 ---
 
+## D-014 — `Finished` must mean the protocol finished, not the last byte
+
+**Date:** 2026-11-07
+
+**Context.** A 39-byte transfer to a Pixel 6a reported every byte acknowledged,
+`All files have been transferred` and `TransferState::Finished` — and the phone
+showed a transfer error. Nothing on our side looked wrong.
+
+The cause is an ordering in `rqs_lib`'s outbound send loop:
+
+```rust
+self.update_state(|e| e.state = TransferState::Finished, true).await;
+self.disconnection().await?;
+```
+
+`Finished` is announced *before* the graceful Disconnection frame is sent. A
+client told a transfer has finished reasonably stops its service at once, and
+`RQS::stop` cancels the task that would have sent that frame. The receiver then
+loses the connection without a clean close and marks the transfer failed, having
+taken every byte.
+
+**Decision.** Two changes, belt and braces.
+
+In the fork, swap the two statements, so `Finished` means the protocol is
+complete rather than that the last byte was written. A failure to send the frame
+is logged rather than propagated: the transfer did succeed, and the client still
+needs to hear `Finished`.
+
+In this project, wait a second after a successful transfer before stopping the
+service — in the CLI's one-shot path and in the daemon's shutdown. That covers
+the window regardless of which `rqs_lib` revision is underneath, which matters
+because the pin will eventually move and this failure mode is silent on our side.
+
+**Why the event could not simply be trusted.** This is the second time a
+terminal state has meant less than it appears to. `Finished` is set by the
+sender's own loop; nothing in it is a report from the receiving application
+(RQS_LIB_NOTES.md says so). Treating it as proof of delivery is what produced
+three separate claims of success in this project against a phone that disagreed.
+
+**Status: a hypothesis with a mechanism, not a confirmed fix.** The race is real
+and demonstrable from the source, and it explains a byte-complete transfer
+failing at the receiver. Whether it is the *only* cause of the Pixel's error is
+unverified until a transfer actually lands.
+
+---
+
 ## D-013 — The D-Bus API shape
 
 **Date:** 2026-11-07

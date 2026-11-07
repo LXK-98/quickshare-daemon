@@ -508,6 +508,19 @@ async fn run() -> Result<()> {
         }
     }
 
+    // A transfer that just finished may still be sending its graceful
+    // Disconnection frame: `rqs_lib` announces Finished before sending it, and
+    // cancelling now would drop it, leaving the receiver to treat a complete
+    // transfer as failed. See the note in cli.rs.
+    if !outbound.is_empty() || !active.is_empty() {
+        tracing::debug!(
+            outbound = outbound.len(),
+            inbound = active.len(),
+            "letting in-flight transfers close cleanly before stopping"
+        );
+        tokio::time::sleep(Duration::from_secs(1)).await;
+    }
+
     // Cancels the TCP server, mDNS and BLE tasks and waits for them to finish.
     rqs.stop().await;
 
