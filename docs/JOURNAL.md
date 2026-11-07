@@ -36,9 +36,17 @@ halves of the contract cannot drift.
 `medium` is also surfaced in the CLI's device table rather than left unused —
 worth seeing, since Bluetooth is roughly a thousand times slower than Wi-Fi.
 
-50 tests, clippy clean. **Not yet seen against a real device:** that a phone's
-endpoint id arrives as its `id`. Everything structural is covered by tests and
-introspection, but that one needs a sheet open.
+50 tests, clippy clean.
+
+**Confirmed against the phone.** `endpoint_id: Some("EXAMPLEENDPT02")` alongside
+`id: "192.0.2.129:53601"`, and the table reads
+`Pixel 6a | wifi_lan | 192.0.2.129:53601 | EXAMPLEENDPT02`. Identity
+and address are visibly separate, and the id matches what the controlled
+stability check measured earlier the same evening.
+
+Narrow gap left: that run used the standalone path, so the `addresses` map going
+over D-Bus is test-covered rather than phone-covered. Same `Device` code
+underneath either way.
 
 ---
 

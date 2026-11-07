@@ -375,8 +375,23 @@ each other so the two halves of the contract cannot drift apart.
 **Verified:** 50 tests including the new identity cases — a device moving
 address stays one device, two devices sharing an address stay two, and a Wi-Fi
 announcement does not disturb a Bluetooth address. Introspection confirms
-`ListDevices` still returns `aa{sv}`. **Not yet seen against a real device**,
-which is the one check left: that a phone's endpoint id arrives as its `id`.
+`ListDevices` still returns `aa{sv}`.
+
+**Confirmed against the real device**, 2026-11-07:
+
+```
+endpoint_id: Some("EXAMPLEENDPT02")   identity
+id:          "192.0.2.129:53601"   address
+
+NAME                 VIA        ADDRESS                 ID
+Pixel 6a    wifi_lan   192.0.2.129:53601    EXAMPLEENDPT02
+```
+
+The endpoint id the fork extracts from the fullname is the same value the
+controlled stability check measured. One gap remains, and it is narrow: that run
+used the standalone path, so the `addresses` map going over D-Bus has been
+exercised by tests rather than against a phone. The `Device` model underneath it
+is the same code either way.
 
 ---
 
