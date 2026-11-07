@@ -3,6 +3,44 @@
 Per-session record: what was done, what is verified, what broke, what is next.
 Newest first.
 
+## 2026-11-07 — Forked `rqs_lib` and fixed the EC point bug
+
+**Re-checked upstream first.** Nothing had been fixed. `nozwock/rquickshare` is
+still at `c9ac93f` (2026-09-25) — the same HEAD as six weeks earlier — and
+`Martichou/rquickshare`, the real upstream, is at `378d8ae` from **2025-06-16**,
+roughly 17 months stale with 105 open issues. All four call sites across both
+forks are byte-identical to what we analysed, and no issue in either tracker
+mentions the error. D-001's "update deliberately when a fix lands" had nothing
+to wait for.
+
+**Forked and fixed.** `LXK-98/rquickshare`, branch `fix/ec-point-left-pad`, rev
+`7b42f7d`, **branched at `17702ed`** so Packet remains a valid API reference and
+the divergence is exactly one commit. `utils::p256_coordinate` right-aligns the
+significant bytes into a fixed `[u8; 32]`; both `inbound.rs` and `outbound.rs`
+go through it. D-012.
+
+**Verified against the original reproduction.** 500,000 real P-256 keys through
+the fork's actual helper: 1991 carry a short coordinate (0.398%), **0 decode
+failures, 0 wrong or invalid points**. Every one of those 1991 failed before the
+fix. The check now also asserts the rebuilt point *equals the original*, not
+merely that it parses — a padding bug that produced a valid but different point
+would be worse than one that fails loudly.
+
+Fork: 6/6 tests. This project: rebuilt against it, 45/45 tests, clippy clean.
+
+**Not done:**
+
+- **The fix has not been offered upstream.** Both repos are dormant, but it is a
+  small reviewable patch with a standalone reproduction and is worth filing
+  regardless. Opening an issue or PR on someone else's repository is a
+  publishing action, so it waits for Alex to ask.
+- **Not retested end to end against the phone.** At 1 in 262 a successful
+  transfer proves nothing about this fix either way; the 500k-key check is the
+  real evidence. Worth one ordinary send to confirm the fork did not break the
+  handshake in some other way.
+
+---
+
 ## 2026-10-01 — Sending tested against the phone; an upstream crypto bug
 
 **The send path reaches `Finished` and transfers every byte**, confirmed on a

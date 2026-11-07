@@ -327,6 +327,64 @@ a file you need to look at before running.
 
 ---
 
+## D-012 — Fork `rqs_lib` to fix the P-256 coordinate padding
+
+**Date:** 2026-11-07
+
+**Context.** The `elliptic curve point encoding error` documented in
+RQS_LIB_NOTES.md breaks roughly 1 connection in 262, inbound and outbound
+alike. D-001 pinned a rev partly so a fix could be picked up "deliberately"
+when one landed. Re-checked on 2026-11-07:
+
+- `nozwock/rquickshare` HEAD is still `c9ac93f`, last commit 2026-09-25 — the
+  same HEAD as when we first looked on 2026-09-30. Six weeks, no movement.
+- `Martichou/rquickshare`, the actual upstream, HEAD `378d8ae`, last commit
+  **2025-06-16** — about 17 months stale, 105 open issues.
+- Both still carry the bug, at all four call sites, byte-identical.
+- No issue in either tracker matches "elliptic curve", "point encoding",
+  "SentUkeyClientInit", "curve" or "handshake". Unreported.
+
+So there was nothing to wait for. "Update deliberately when a fix lands" had
+quietly become "never".
+
+**Decision.** Fork to `LXK-98/rquickshare` and pin
+`7b42f7d94869f2b4570f4fe1c97a989cbb377797`.
+
+The fork is **branched at `17702ed`**, the rev Packet is tested against, and
+carries exactly one commit. That preserves the property D-001 actually cared
+about — Packet stays a valid API reference — while fixing the defect. Divergence
+from the reference is one function, not a moving target.
+
+The fix adds `utils::p256_coordinate`, which right-aligns the significant bytes
+into a fixed `[u8; 32]`, and routes both call sites through it. Unit tests in
+the fork cover short, sign-byte-prefixed, exact and empty coordinates plus the
+property that any input length yields a 65-byte point.
+
+**Verified.** Re-ran the 500,000-key reproduction against the fork's real
+helper: 1991 keys carry a short coordinate (0.398%), **0 decode failures, 0
+wrong or invalid points**. Every one of those 1991 failed before. The check
+asserts the rebuilt point equals the original, not merely that it parses.
+
+**Rejected.**
+
+- *Keep waiting for upstream.* Both repos are dormant and the bug is
+  unreported; this was waiting for something nobody was working on.
+- *A local `[patch]` against a path dependency.* No URL to pin, nothing to
+  share, and it would not survive a clone of this repo.
+- *Work around it in our own code.* The failure is inside the library's
+  handshake; there is no seam above it to retry from, and it breaks receiving,
+  where we are not the one initiating.
+
+**Cost accepted.** A fork is a maintenance commitment: picking up future
+`rqs_lib` changes now means rebasing one commit rather than bumping a rev. One
+commit is about as cheap as that gets, and the alternative was a known 1-in-262
+failure in the daemon's primary function.
+
+**Open:** the fix is worth sending upstream. Not yet offered — see
+docs/JOURNAL.md.
+
+---
+
 ## D-011 — Revealing files goes through `FileManager1`, not `xdg-open`
 
 **Date:** 2026-09-30

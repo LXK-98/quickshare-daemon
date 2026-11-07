@@ -292,6 +292,11 @@ that rather than the estimate.
 The reproduction is kept at `docs/ec-point-bug-repro.rs` — a standalone program
 with no dependency on this project, so it can be handed to upstream as-is.
 
+**Fixed in our fork** as of 2026-11-07 — `LXK-98/rquickshare`, branch
+`fix/ec-point-left-pad`, rev `7b42f7d`, branched at `17702ed` with this as its
+only commit. See docs/DECISIONS.md#d-012. Still present in both
+`nozwock/rquickshare` (`c9ac93f`) and `Martichou/rquickshare` (`378d8ae`).
+
 **The fix is three lines** — left-pad a short coordinate to 32 bytes instead of
 appending it raw. PLAN.md's standing guidance is to fork `rqs_lib` rather than
 Packet if patching is needed, so this is the sanctioned path; it is not yet done,

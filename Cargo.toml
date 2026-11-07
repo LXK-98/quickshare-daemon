@@ -18,7 +18,11 @@ futures-util = { version = "0.3", default-features = false }
 # docs/DECISIONS.md#d-001. `default-features = false` + `experimental` is what
 # Packet uses (upstream's default feature set is exactly `["experimental"]`,
 # spelled out here so a change upstream cannot silently alter our build).
-rqs_lib = { git = "https://github.com/nozwock/rquickshare.git", rev = "17702edc9f8b0d1e67c50f125e03ca3f8c291f3c", default-features = false, features = [
+#
+# Our own fork, branched at nozwock's `17702ed` -- the rev Packet is tested
+# against -- carrying exactly one commit: the P-256 coordinate padding fix that
+# both nozwock and Martichou still ship broken. See docs/DECISIONS.md#d-012.
+rqs_lib = { git = "https://github.com/LXK-98/rquickshare.git", rev = "7b42f7d94869f2b4570f4fe1c97a989cbb377797", default-features = false, features = [
     "experimental",
 ] }
 
