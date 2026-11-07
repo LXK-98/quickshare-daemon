@@ -3,6 +3,41 @@
 Per-session record: what was done, what is verified, what broke, what is next.
 Newest first.
 
+## 2026-11-07 — Design note: device identity across transports
+
+`docs/TRANSPORT_IDENTITY.md`. Written before any Bluetooth code because the
+answer changes the D-Bus contract.
+
+**The finding that shapes it:** `ip:port` is currently doing four separate jobs
+— device identity, dial string, transfer id, and dedup key — which coincide only
+because there is one medium. A Bluetooth-only device has no `ip:port` at all.
+
+Recommendation is to separate identity from address: a stable id of our own,
+plus a list of medium-tagged addresses, with the daemon choosing the medium
+(it is the only component that knows what is reachable). Do it now: the only
+consumer of `ListDevices` is our own CLI, so changing the meaning of `id` costs
+one file today and a published contract later.
+
+Also flagged a latent bug for the same pass: `start_outbound` returns
+`device.id` as the transfer id while `manager.rs`'s outbound error path reports
+`si.addr`. Identical strings today, divergent the moment identity and address
+separate — a client would get a failure for a transfer id it never heard of.
+
+**The research question turned out to be partly answered by our own logs.** The
+mDNS `fullname` carries the real endpoint id, and the Pixel shows
+`EXAMPLEENDPT01` across four share sessions on 2026-10-01 and `EXAMPLEENDPT02`
+across three on 2026-11-07. So it is stable across sessions and changes over
+longer periods — which is exactly the lifetime option B needs, since nothing
+persists an id.
+
+**And it corrected an assumption of mine.** I had written that a phone picks a
+fresh port per share session, which is what justified the IP-based dedup in
+`Registry::apply`. Seven sessions say otherwise: the port was `53601` every
+time, and what changed was the IP, across networks. The dedup does something
+real, just not the thing I claimed. Corrected in RQS_LIB_NOTES.md.
+
+---
+
 ## 2026-11-07 — The handshake is no longer tied to TCP
 
 Step zero of the Bluetooth work, and the thing that was actually blocking it:
