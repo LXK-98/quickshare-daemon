@@ -3,6 +3,48 @@
 Per-session record: what was done, what is verified, what broke, what is next.
 Newest first.
 
+## 2026-11-07 — The handshake is no longer tied to TCP
+
+Step zero of the Bluetooth work, and the thing that was actually blocking it:
+`InboundRequest` and `OutboundRequest` held a `TcpStream` concretely, so no
+other medium could be plugged in at all.
+
+Both are now generic over a `Transport` trait in the fork (`b6699184`):
+`AsyncRead + AsyncWrite + Unpin + Send`, with a blanket impl. That is the whole
+requirement — length-prefixed frames over an ordered, reliable stream. D-015.
+
+**Nothing else had to change.** `manager.rs` needed no edits, since `TcpStream`
+satisfies the bound and the types infer. No behaviour changed: our 48 tests pass
+and TCP discovery still works.
+
+**Verified** by two tests constructing a connection over `tokio::io::duplex`, an
+in-memory pipe. Them compiling is the demonstration. They also open a door that
+was shut before — the protocol can now be exercised in tests with no network at
+all, which is how the Bluetooth path should be tested before any hardware is
+involved.
+
+**What this buys.** `bluer::rfcomm::Stream` already implements `AsyncRead` and
+`AsyncWrite`, so a Bluetooth connection is now a matter of *obtaining the
+stream*, not of touching protocol code.
+
+**What is still missing for Bluetooth**, in rough order:
+
+1. A listener: `bluer::rfcomm::Listener::bind` plus a BlueZ profile
+   registration, advertising Quick Share's service UUID so a phone will connect.
+2. A connector: `bluer::rfcomm::Stream::connect` to a discovered device's MAC.
+3. Discovery over BLE rather than mDNS — a phone with no shared network is not
+   on any mDNS-reachable segment, so `EndpointInfo` would have to carry a MAC
+   instead of an `ip:port`. This is the part that touches our `devices.rs` and
+   the D-Bus API, since both currently assume an `ip:port` identity.
+4. Advertising `Medium::Bluetooth` in the connection request, and ideally
+   handling `BandwidthUpgradeNegotiation` so a hotspot can take over for
+   throughput — RFCOMM is on the order of 1–2 Mbit/s.
+
+Step 3 is the one with design consequences beyond the fork, and worth thinking
+about before writing code.
+
+---
+
 ## 2026-11-07 — Silenced the post-transfer ERROR line
 
 `rqs_lib` logged `error while handling client: early eof (Finished)` at ERROR

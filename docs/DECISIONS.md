@@ -327,6 +327,46 @@ a file you need to look at before running.
 
 ---
 
+## D-015 — Genericise the handshake over its transport
+
+**Date:** 2026-11-07
+
+**Context.** Sending and receiving without a shared Wi-Fi network is the
+direction Alex wants to take this. `rqs_lib` advertises `mediums:
+vec![Medium::WifiLan]` and has no `BandwidthUpgradeNegotiation` handling, but
+the deeper obstacle was structural: `InboundRequest` and `OutboundRequest` held
+a `TcpStream` **concretely**, so no other medium could be plugged in at all.
+
+Nearby Connections defines `BLUETOOTH`, `WIFI_HOTSPOT`, `WIFI_DIRECT`,
+`WIFI_AWARE` and `WEB_RTC` alongside `WIFI_LAN`, and the frame format is
+identical on every one. Only the byte pipe differs.
+
+**Decision.** Add a `Transport` trait to the fork — `AsyncRead + AsyncWrite +
+Unpin + Send`, with a blanket impl — and make both request types generic over
+it. `utils::stream_read_exact` takes any `AsyncRead`.
+
+That is the entire requirement: length-prefixed frames over an ordered,
+reliable stream. A blanket impl rather than explicit opt-in because there is
+nothing a transport could usefully add beyond the three standard traits, and
+requiring registration would be ceremony.
+
+**Cost: none measurable.** No behaviour changed, and `manager.rs` needed no
+edits — `TcpStream` satisfies the bound and the types infer. Our 48 tests pass
+unchanged and TCP discovery still works.
+
+**Verified** by two tests in the fork that construct a connection over
+`tokio::io::duplex`, an in-memory pipe. Them compiling is the demonstration:
+the handshake no longer depends on TCP. They also make it possible to exercise
+the protocol in tests without a network, which nothing could do before.
+
+**Why this first.** `bluer::rfcomm::Stream` already implements `AsyncRead` and
+`AsyncWrite`, so with this in place a Bluetooth connection is a matter of
+obtaining the stream, not of touching the protocol code. Doing it the other way
+round — writing the Bluetooth medium first — would have meant either duplicating
+the handshake or doing this refactor under pressure from half-finished code.
+
+---
+
 ## D-014 — `Finished` must mean the protocol finished, not the last byte
 
 **Date:** 2026-11-07
