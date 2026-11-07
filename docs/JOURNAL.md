@@ -3,6 +3,45 @@
 Per-session record: what was done, what is verified, what broke, what is next.
 Newest first.
 
+## 2026-11-07 — Option B: identity separated from address
+
+Implemented the design note's recommendation. D-016 has the detail; the shape
+of it:
+
+- **Fork** (`5b5a3e2`): `EndpointInfo.endpoint_id` from the mDNS fullname;
+  `SendInfo` carries a `Target` enum and `connect` dispatches on it; the
+  outbound error path reports the caller's id rather than the address.
+- **Here**: `Device` has `addresses: Vec<Address>` with a `Medium`, `Registry`
+  is keyed on the endpoint id, `best_address` picks the medium, and
+  `ListDevices` swaps `address: s` for `addresses: a{ss}` plus `medium: s`.
+
+**The IP-based deduplication is gone entirely.** It existed to paper over the
+key being the address; keying on identity removes the problem rather than
+compensating for it. Its replacement tests are better questions: a device that
+moves address stays one device, two devices sharing an address stay two, and a
+Wi-Fi announcement does not disturb a Bluetooth address.
+
+**A wrinkle found while implementing.** A removal event carries only `rqs_lib`'s
+`"ip:port"` id and *no* endpoint id, so a withdrawal cannot be matched by key at
+all. `Registry` looks withdrawals up by address as well. Easy to have missed,
+and it would have manifested as devices never disappearing.
+
+**The contract break was the point of doing it now.** `address` is gone and `id`
+means something different. Only our own CLI consumes it; after a Nautilus or
+Shell extension existed this would have been a migration. The
+`the_dict_keys_are_stable` test caught it, which is what it is for, and a new
+test now checks `device_dict` against `RemoteDevice::from_dict` so the two
+halves of the contract cannot drift.
+
+`medium` is also surfaced in the CLI's device table rather than left unused —
+worth seeing, since Bluetooth is roughly a thousand times slower than Wi-Fi.
+
+50 tests, clippy clean. **Not yet seen against a real device:** that a phone's
+endpoint id arrives as its `id`. Everything structural is covered by tests and
+introspection, but that one needs a sheet open.
+
+---
+
 ## 2026-11-07 — Endpoint id confirmed stable across a share session
 
 The controlled check TRANSPORT_IDENTITY.md called for. `avahi-browse` running

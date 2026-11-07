@@ -1,5 +1,8 @@
 # Device identity across transports
 
+> **Status: implemented 2026-11-07**, option B. See docs/DECISIONS.md#d-016 for
+> what landed. This note is kept as the reasoning behind it.
+
 A design note, written 2026-11-07 before any Bluetooth code exists, because the
 answer changes the D-Bus contract and is expensive to retrofit.
 

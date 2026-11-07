@@ -327,6 +327,59 @@ a file you need to look at before running.
 
 ---
 
+## D-016 — Option B implemented: identity separate from address
+
+**Date:** 2026-11-07
+
+Implements the recommendation in docs/TRANSPORT_IDENTITY.md, which has the full
+reasoning. What actually landed:
+
+**In the fork** (`5b5a3e2`):
+
+- `EndpointInfo` gains `endpoint_id`, from the first label of the mDNS
+  `fullname`. `id` is left as the synthesised `"ip:port"`, since callers pass it
+  back as `SendInfo::id` — adding a field rather than redefining one keeps the
+  change additive for any other consumer.
+- `SendInfo` carries a `Target` enum instead of a bare `addr`, with
+  `WifiLan { addr }` as its only variant, and `connect` dispatches on it.
+- The outbound error path reports `si.id` rather than `si.addr`, fixing the
+  latent inconsistency the note flagged.
+
+**Here:**
+
+- `Device` holds `addresses: Vec<Address>` — medium plus address — and `id` is
+  the endpoint id. `Medium` names `WifiLan` and `Bluetooth`; only the first
+  works.
+- `Registry` is keyed on the endpoint id, falling back to the address for peers
+  that advertise none. **The IP-based deduplication is gone**: it existed
+  because the key *was* the address, so keying on identity removes the problem
+  rather than compensating for it.
+- `best_address` picks the medium, preferring Wi-Fi LAN. This is the daemon's
+  choice by design — only it knows what is reachable and what each costs.
+- `ListDevices` dicts replace `address: s` with `addresses: a{ss}` (medium →
+  address) and add `medium: s`, the one the daemon would use. `id` now means
+  identity.
+
+**One wrinkle worth knowing.** A removal event carries only `rqs_lib`'s
+`"ip:port"` id and *no* endpoint id, so a withdrawal cannot be matched by key.
+`Registry` therefore looks a withdrawal up by address as well. Both paths are
+tested.
+
+**Breaking the D-Bus contract was the point of doing it now.** `address` is
+gone and `id` means something different. The only consumer is our own CLI;
+once a Nautilus or Shell extension exists this would have been a migration.
+The `the_dict_keys_are_stable` test caught the change, which is what it is for,
+and a new test now checks `device_dict` and `RemoteDevice::from_dict` against
+each other so the two halves of the contract cannot drift apart.
+
+**Verified:** 50 tests including the new identity cases — a device moving
+address stays one device, two devices sharing an address stay two, and a Wi-Fi
+announcement does not disturb a Bluetooth address. Introspection confirms
+`ListDevices` still returns `aa{sv}`. **Not yet seen against a real device**,
+which is the one check left: that a phone's endpoint id arrives as its `id`.
+
+---
+
 ## D-015 — Genericise the handshake over its transport
 
 **Date:** 2026-11-07

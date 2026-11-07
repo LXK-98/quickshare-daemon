@@ -48,20 +48,57 @@ const DEVICE_TTL: Duration = Duration::from_secs(120);
 /// gone still disappears quickly.
 const REMOVAL_GRACE: Duration = Duration::from_secs(10);
 
+/// A medium a device can be reached over.
+///
+/// Mirrors the subset of Nearby Connections' `Medium` that we could plausibly
+/// use. Only `WifiLan` works today; the rest are named because a device's
+/// reachability is a list, and the daemon has to be able to say which entry is
+/// which when it picks one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Medium {
+    /// mDNS discovery plus a direct TCP connection. The only one implemented.
+    WifiLan,
+    /// Bluetooth RFCOMM. Reachable without a shared network, and slow.
+    Bluetooth,
+}
+
+impl Medium {
+    /// The name used on D-Bus, matching the protocol's own spelling.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::WifiLan => "wifi_lan",
+            Self::Bluetooth => "bluetooth",
+        }
+    }
+}
+
+/// One way of reaching a device.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Address {
+    pub medium: Medium,
+    /// Medium-specific: `"ip:port"` for `WifiLan`, a MAC for `Bluetooth`.
+    pub address: String,
+}
+
 /// A device we could send to.
+///
+/// Identity and reachability are separate: `id` says *which device*, and
+/// `addresses` says *how to reach it*, possibly several ways at once. Before
+/// 2026-11-07 these were one `"ip:port"` string doing both jobs, which no
+/// device without an IP could satisfy. See docs/TRANSPORT_IDENTITY.md.
 #[derive(Debug, Clone)]
 pub struct Device {
-    /// `rqs_lib`'s endpoint id. Stable for as long as the device keeps
-    /// advertising, and what [`crate::send`] needs to address it.
+    /// The device's advertised endpoint id.
+    ///
+    /// Stable across a device closing and reopening its share sheet, which is
+    /// the lifetime that matters here. Not stable across days or networks, so
+    /// it is never persisted.
     pub id: String,
     /// What the device calls itself. Absent until mDNS resolves the TXT
     /// record, which is why it is an `Option` rather than a placeholder.
     pub name: Option<String>,
-    /// `ip:port`, ready for `SendInfo::addr`. `None` until resolved.
-    pub addr: Option<String>,
-    /// The address alone, used to recognise the same device after it changes
-    /// port. See the deduplication in [`Registry::apply`].
-    pub ip: Option<String>,
+    /// Every way this device is currently known to be reachable, best first.
+    pub addresses: Vec<Address>,
     /// When this entry was last refreshed by a discovery event.
     pub last_seen: Instant,
     /// When mDNS said this device went away, if it has.
@@ -78,11 +115,27 @@ impl Device {
 
     /// Whether this device can actually be sent to.
     ///
-    /// An entry can exist without an address: mDNS announces a service before
+    /// An entry can exist with no addresses: mDNS announces a service before
     /// resolving it. Offering such a device in a picker would produce a send
     /// that fails for reasons the user cannot act on.
     pub fn is_reachable(&self) -> bool {
-        self.addr.is_some()
+        !self.addresses.is_empty()
+    }
+
+    /// The medium to use for a transfer, and its address.
+    ///
+    /// Prefers Wi-Fi LAN, which is both the only implemented medium and the
+    /// fast one. This is the daemon's choice to make rather than a client's:
+    /// only the daemon knows what is reachable and what each medium costs.
+    pub fn best_address(&self) -> Option<&Address> {
+        self.addresses.iter().min_by_key(|address| address.medium)
+    }
+
+    /// The address for one medium, if the device is reachable over it.
+    pub fn address_for(&self, medium: Medium) -> Option<&Address> {
+        self.addresses
+            .iter()
+            .find(|address| address.medium == medium)
     }
 }
 
@@ -104,19 +157,34 @@ impl Registry {
     /// emitting a D-Bus signal for a refresh that changed nothing. mDNS
     /// re-announces the same device repeatedly, so most events change nothing.
     pub fn apply(&mut self, endpoint: EndpointInfo) -> bool {
+        // Keyed on the device's own endpoint id, falling back to the address
+        // when a peer does not advertise one.
+        let key = Self::key_for(&endpoint);
+
         // A removal is anything that is not an explicit `Some(true)`.
         //
         // rqs_lib sends exactly two kinds of event: `ServiceResolved` builds an
         // `EndpointInfo` with `present: Some(true)` and every field filled in,
         // and `ServiceRemoved` sends `EndpointInfo { id, ..Default::default() }`
-        // — so a removal carries `present: None` and *no other data*.
-        // `Some(false)` is never sent at all.
+        // — so a removal carries `present: None` and *no other data*, which
+        // includes no endpoint id. `Some(false)` is never sent at all.
         //
         // Reading `None` as "still here" was a bug: the empty removal event was
         // applied as an update and wiped the device's name, leaving "Unknown
         // device" in the picker. See docs/RQS_LIB_NOTES.md.
+
         if endpoint.present != Some(true) {
-            return match self.devices.get_mut(&endpoint.id) {
+            // A removal carries no endpoint_id, so try the address key too.
+            let withdrawn_key = if self.devices.contains_key(&key) {
+                key
+            } else {
+                match self.key_by_address(&endpoint.id) {
+                    Some(found) => found,
+                    None => return false,
+                }
+            };
+
+            return match self.devices.get_mut(&withdrawn_key) {
                 // Withdrawn, not deleted: see REMOVAL_GRACE.
                 Some(device) if device.withdrawn_at.is_none() => {
                     device.withdrawn_at = Some(Instant::now());
@@ -128,21 +196,18 @@ impl Registry {
         }
 
         let addr = match (&endpoint.ip, &endpoint.port) {
-            (Some(ip), Some(port)) => Some(format!("{ip}:{port}")),
+            (Some(ip), Some(port)) => Some(Address {
+                medium: Medium::WifiLan,
+                address: format!("{ip}:{port}"),
+            }),
             _ => None,
         };
 
-        // `rqs_lib` sets `id` to "ip:port", and a phone picks a fresh port for
-        // every share session — so the same device reappears under a new id and
-        // the picker would list it twice. One IP is one device on a LAN, so an
-        // entry for the same address under a different id is the same phone
-        // having moved port, and the old entry is dropped.
-        if let Some(ip) = endpoint.ip.as_deref() {
-            self.devices
-                .retain(|id, device| id == &endpoint.id || device.ip.as_deref() != Some(ip));
-        }
-
-        match self.devices.get_mut(&endpoint.id) {
+        // No address-based deduplication any more. It existed because the key
+        // *was* the address, so a device whose address changed arrived as a
+        // second entry; keying on the endpoint id removes the problem rather
+        // than compensating for it. See docs/TRANSPORT_IDENTITY.md.
+        match self.devices.get_mut(&key) {
             Some(existing) => {
                 existing.last_seen = Instant::now();
                 // Announced again, so any pending withdrawal is void.
@@ -152,30 +217,41 @@ impl Registry {
                 // — but losing a device's name is the one failure that is
                 // visible to the user, so it is guarded explicitly.
                 let name_changed = endpoint.name.is_some() && existing.name != endpoint.name;
-                let changed =
-                    was_withdrawn || name_changed || (addr.is_some() && existing.addr != addr);
-                if changed {
-                    if name_changed {
-                        existing.name = endpoint.name;
+                // A new or changed address for a medium we already had
+                // replaces that medium's entry; others are left alone, so a
+                // Wi-Fi announcement cannot erase a Bluetooth address.
+                let address_changed = match &addr {
+                    Some(new) => {
+                        let previous = existing.address_for(new.medium).cloned();
+                        if previous.as_ref() != Some(new) {
+                            existing
+                                .addresses
+                                .retain(|address| address.medium != new.medium);
+                            existing.addresses.push(new.clone());
+                            existing.addresses.sort_by_key(|address| address.medium);
+                            true
+                        } else {
+                            false
+                        }
                     }
-                    // Keep a known address rather than overwrite it with None:
-                    // a later unresolved announcement must not make a reachable
+                    // An unresolved announcement must not make a reachable
                     // device unreachable.
-                    if addr.is_some() {
-                        existing.addr = addr;
-                        existing.ip = endpoint.ip;
-                    }
+                    None => false,
+                };
+
+                let changed = was_withdrawn || name_changed || address_changed;
+                if name_changed {
+                    existing.name = endpoint.name;
                 }
                 changed
             }
             None => {
                 self.devices.insert(
-                    endpoint.id.clone(),
+                    key.clone(),
                     Device {
-                        id: endpoint.id,
+                        id: key,
                         name: endpoint.name,
-                        addr,
-                        ip: endpoint.ip,
+                        addresses: addr.into_iter().collect(),
                         last_seen: Instant::now(),
                         withdrawn_at: None,
                     },
@@ -183,6 +259,35 @@ impl Registry {
                 true
             }
         }
+    }
+
+    /// The registry key for an endpoint.
+    ///
+    /// The device's advertised endpoint id when it has one, and otherwise its
+    /// address. The fallback keeps peers that advertise no endpoint id usable
+    /// rather than invisible, at the cost of the old instability for those
+    /// devices only.
+    fn key_for(endpoint: &EndpointInfo) -> String {
+        endpoint
+            .endpoint_id
+            .clone()
+            .unwrap_or_else(|| endpoint.id.clone())
+    }
+
+    /// Finds a device by one of its addresses.
+    ///
+    /// Needed because a removal event carries only `rqs_lib`'s `"ip:port"` id
+    /// and no endpoint id, so a withdrawal cannot be matched by key alone.
+    fn key_by_address(&self, address: &str) -> Option<String> {
+        self.devices
+            .iter()
+            .find(|(_, device)| {
+                device
+                    .addresses
+                    .iter()
+                    .any(|candidate| candidate.address == address)
+            })
+            .map(|(key, _)| key.clone())
     }
 
     /// Drops devices that have aged out or whose withdrawal grace has passed.
@@ -278,25 +383,46 @@ mod tests {
     /// are deduplicated — a fixture reusing an address would not describe what
     /// it claims to.
     fn endpoint(id: &str, name: Option<&str>, resolved: bool) -> EndpointInfo {
-        let (ip, port) = match id.rsplit_once(':') {
-            Some((ip, port)) => (ip.to_owned(), port.to_owned()),
-            None => {
-                let seed: u32 = id.bytes().map(u32::from).sum();
-                (
-                    format!("10.0.{}.{}", seed / 256 % 256, seed % 256),
-                    "1234".to_owned(),
-                )
-            }
+        endpoint_at(id, name, resolved.then(|| synthetic_address(id)))
+    }
+
+    /// A stable address derived from an endpoint id, so separate fixtures
+    /// describe separate devices.
+    fn synthetic_address(id: &str) -> String {
+        let seed: u32 = id.bytes().map(u32::from).sum();
+        format!("10.0.{}.{}:1234", seed / 256 % 256, seed % 256)
+    }
+
+    /// Builds an announcement for `id` at a specific address.
+    ///
+    /// `endpoint_id` is the identity and the address is separate, which is the
+    /// whole point of the model: the same device can turn up at a new address
+    /// without becoming a new device.
+    fn endpoint_at(id: &str, name: Option<&str>, address: Option<String>) -> EndpointInfo {
+        let (ip, port) = match address.as_deref().and_then(|a| a.rsplit_once(':')) {
+            Some((ip, port)) => (Some(ip.to_owned()), Some(port.to_owned())),
+            None => (None, None),
         };
 
         EndpointInfo {
             fullname: format!("{id}._FC9F5ED42C8A._tcp.local."),
-            id: id.to_owned(),
+            // rqs_lib synthesises this from the address.
+            id: address.unwrap_or_else(|| id.to_owned()),
+            endpoint_id: Some(id.to_owned()),
             name: name.map(str::to_owned),
-            ip: resolved.then_some(ip),
-            port: resolved.then_some(port),
+            ip,
+            port,
             rtype: None,
             present: Some(true),
+        }
+    }
+
+    /// A removal exactly as `rqs_lib` sends one: the `"ip:port"` id and nothing
+    /// else, with **no endpoint id**.
+    fn removal(address: &str) -> EndpointInfo {
+        EndpointInfo {
+            id: address.to_owned(),
+            ..Default::default()
         }
     }
 
@@ -321,14 +447,14 @@ mod tests {
         let mut registry = Registry::default();
         registry.apply(endpoint("a", Some("Pixel"), true));
 
-        let resolved_addr = registry.get("a").unwrap().addr.clone();
+        let resolved = registry.get("a").unwrap().addresses.clone();
 
         // mDNS announces before resolving; this must not make a reachable
         // device unreachable.
         registry.apply(endpoint("a", Some("Pixel"), false));
 
         let device = registry.get("a").unwrap();
-        assert_eq!(device.addr, resolved_addr);
+        assert_eq!(device.addresses, resolved);
         assert!(device.is_reachable());
     }
 
@@ -343,13 +469,23 @@ mod tests {
     }
 
     #[test]
-    fn a_device_changing_port_does_not_appear_twice() {
+    fn a_device_that_moves_address_stays_one_device() {
         let mut registry = Registry::default();
 
-        // The same phone, re-advertising on a new port for a second share --
-        // which rqs_lib reports as a different `id`, since the id *is* ip:port.
-        registry.apply(endpoint("192.168.1.5:1111", Some("Pixel"), true));
-        registry.apply(endpoint("192.168.1.5:2222", Some("Pixel"), true));
+        // The same phone on a new address -- a different network, or a new
+        // port. Identity is the endpoint id, so this is an update rather than
+        // a second device. Previously this needed address-based deduplication
+        // to paper over the id *being* the address.
+        registry.apply(endpoint_at(
+            "pixel",
+            Some("Pixel"),
+            Some("192.168.1.5:1111".to_owned()),
+        ));
+        registry.apply(endpoint_at(
+            "pixel",
+            Some("Pixel"),
+            Some("192.168.1.5:2222".to_owned()),
+        ));
 
         let listed = registry.list();
         assert_eq!(
@@ -357,17 +493,69 @@ mod tests {
             1,
             "one phone must not be listed twice: {listed:?}"
         );
-        assert_eq!(listed[0].addr.as_deref(), Some("192.168.1.5:2222"));
+        assert_eq!(
+            listed[0].best_address().unwrap().address,
+            "192.168.1.5:2222",
+            "the newer address must win"
+        );
     }
 
     #[test]
-    fn different_devices_on_different_addresses_both_list() {
+    fn two_devices_sharing_an_address_are_still_two_devices() {
         let mut registry = Registry::default();
 
-        registry.apply(endpoint("10.0.0.1:1", Some("Pixel"), true));
-        registry.apply(endpoint("10.0.0.2:1", Some("Laptop"), true));
+        // Would have collapsed into one under the old address-based dedup. It
+        // should not happen on a LAN, but identity no longer depends on it not
+        // happening.
+        registry.apply(endpoint_at(
+            "one",
+            Some("Pixel"),
+            Some("10.0.0.1:1".to_owned()),
+        ));
+        registry.apply(endpoint_at(
+            "two",
+            Some("Laptop"),
+            Some("10.0.0.1:1".to_owned()),
+        ));
 
         assert_eq!(registry.list().len(), 2);
+    }
+
+    #[test]
+    fn an_address_for_one_medium_does_not_disturb_another() {
+        let mut registry = Registry::default();
+        registry.apply(endpoint("a", Some("Pixel"), true));
+
+        // Stand in for a Bluetooth address arriving from another source.
+        registry
+            .devices
+            .get_mut("a")
+            .unwrap()
+            .addresses
+            .push(Address {
+                medium: Medium::Bluetooth,
+                address: "AA:BB:CC:DD:EE:FF".to_owned(),
+            });
+
+        // A fresh Wi-Fi announcement must replace only the Wi-Fi entry.
+        registry.apply(endpoint_at(
+            "a",
+            Some("Pixel"),
+            Some("10.9.9.9:9999".to_owned()),
+        ));
+
+        let device = registry.get("a").unwrap();
+        assert_eq!(device.addresses.len(), 2, "{:?}", device.addresses);
+        assert_eq!(
+            device.address_for(Medium::WifiLan).unwrap().address,
+            "10.9.9.9:9999"
+        );
+        assert_eq!(
+            device.address_for(Medium::Bluetooth).unwrap().address,
+            "AA:BB:CC:DD:EE:FF"
+        );
+        // Wi-Fi is preferred when both are available.
+        assert_eq!(device.best_address().unwrap().medium, Medium::WifiLan);
     }
 
     #[test]

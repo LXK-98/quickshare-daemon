@@ -20,12 +20,12 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use rqs_lib::channel::TransferKind;
-use rqs_lib::{EndpointInfo, OutboundPayload, RQS, SendInfo, TransferState, Visibility};
+use rqs_lib::{EndpointInfo, OutboundPayload, RQS, SendInfo, Target, TransferState, Visibility};
 use tokio::sync::broadcast;
 
 use crate::config::Config;
 use crate::dbus::{self, DaemonProxy, RemoteDevice, resolve_remote};
-use crate::devices::{Device, Registry};
+use crate::devices::{Device, Medium, Registry};
 use crate::notify::format_bytes;
 
 /// Connects to a running daemon, or `None` if there is not one.
@@ -67,10 +67,14 @@ async fn remote_devices(proxy: &DaemonProxy<'_>) -> Result<Vec<RemoteDevice>> {
 }
 
 /// Prints a device table, shared by both paths.
-fn print_devices(rows: impl IntoIterator<Item = (String, String, String)>) {
-    println!("{:<24}  {:<22}  ID", "NAME", "ADDRESS");
-    for (name, address, id) in rows {
-        println!("{name:<24}  {address:<22}  {id}");
+///
+/// The medium is shown because a device can now be reachable more than one
+/// way, and which one the daemon would pick affects what to expect — Bluetooth
+/// is roughly a thousand times slower than Wi-Fi.
+fn print_devices(rows: impl IntoIterator<Item = (String, String, String, String)>) {
+    println!("{:<24}  {:<10}  {:<22}  ID", "NAME", "VIA", "ADDRESS");
+    for (name, medium, address, id) in rows {
+        println!("{name:<24}  {medium:<10}  {address:<22}  {id}");
     }
 }
 
@@ -107,12 +111,16 @@ async fn devices_via_daemon(proxy: &DaemonProxy<'_>, window: Duration) -> Result
     }
 
     print_devices(found.into_iter().map(|device| {
-        let address = if device.reachable {
-            device.id.clone()
-        } else {
-            "-".to_owned()
-        };
-        (device.name, address, device.id)
+        (
+            device.name,
+            if device.medium.is_empty() {
+                "-".to_owned()
+            } else {
+                device.medium.clone()
+            },
+            device.address.clone().unwrap_or_else(|| "-".to_owned()),
+            device.id,
+        )
     }));
     Ok(())
 }
@@ -341,7 +349,10 @@ async fn discover(session: &mut Session, window: Duration, verbose: bool) -> Reg
                         eprintln!(
                             "  found {} ({})",
                             device.display_name(),
-                            device.addr.as_deref().unwrap_or("resolving…")
+                            device
+                                .best_address()
+                                .map(|address| address.address.as_str())
+                                .unwrap_or("resolving…")
                         );
                     }
                 }
@@ -384,9 +395,14 @@ async fn devices_standalone(window: Duration) -> Result<()> {
     }
 
     print_devices(found.into_iter().map(|device| {
+        let best = device.best_address().cloned();
         (
             device.display_name().to_owned(),
-            device.addr.clone().unwrap_or_else(|| "-".to_owned()),
+            best.as_ref()
+                .map(|address| address.medium.as_str().to_owned())
+                .unwrap_or_else(|| "-".to_owned()),
+            best.map(|address| address.address)
+                .unwrap_or_else(|| "-".to_owned()),
             device.id,
         )
     }));
@@ -551,10 +567,22 @@ async fn send_standalone(target: &str, files: Vec<PathBuf>, window: Duration) ->
     };
 
     // `find_target` only returns reachable devices.
-    let addr = device
-        .addr
-        .clone()
+    let address = device
+        .best_address()
+        .cloned()
         .expect("find_target returns only reachable devices");
+    let target_medium = match address.medium {
+        Medium::WifiLan => Target::WifiLan {
+            addr: address.address,
+        },
+        Medium::Bluetooth => {
+            session.rqs.stop().await;
+            bail!(
+                "{} is only reachable over Bluetooth, which is not implemented yet",
+                device.display_name()
+            );
+        }
+    };
 
     // Subscribe before sending, so no early state change is missed.
     let mut events = session.rqs.message_sender.subscribe();
@@ -571,7 +599,7 @@ async fn send_standalone(target: &str, files: Vec<PathBuf>, window: Duration) ->
         .send(SendInfo {
             id: device.id.clone(),
             name: device.display_name().to_owned(),
-            addr,
+            target: target_medium,
             ob: OutboundPayload::Files(
                 files
                     .iter()
@@ -740,6 +768,7 @@ mod tests {
         for (index, (id, name)) in entries.iter().enumerate() {
             registry.apply(EndpointInfo {
                 fullname: String::new(),
+                endpoint_id: Some((*id).to_owned()),
                 id: (*id).to_owned(),
                 name: name.map(str::to_owned),
                 ip: Some(format!("10.0.0.{}", index + 1)),

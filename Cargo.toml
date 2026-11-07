@@ -24,7 +24,7 @@ futures-util = { version = "0.3", default-features = false }
 # coordinate padding (docs/DECISIONS.md#d-012), the Disconnection frame being
 # sent after Finished is announced rather than before (D-014), and a peer's
 # post-transfer hangup being logged at ERROR.
-rqs_lib = { git = "https://github.com/LXK-98/rquickshare.git", rev = "b6699184da7b867f24c688d0a5239a62ea6d2a50", default-features = false, features = [
+rqs_lib = { git = "https://github.com/LXK-98/rquickshare.git", rev = "5b5a3e2f73edb504d52c52b1d54832f319f4c157", default-features = false, features = [
     "experimental",
 ] }
 

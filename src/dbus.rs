@@ -86,11 +86,31 @@ fn device_dict(device: &Device) -> HashMap<String, OwnedValue> {
 
     insert("id", Value::from(device.id.clone()));
     insert("name", Value::from(device.display_name().to_owned()));
-    insert(
-        "address",
-        Value::from(device.addr.clone().unwrap_or_default()),
-    );
     insert("reachable", Value::from(device.is_reachable()));
+
+    // Every way the device is reachable, as medium -> address. A device can be
+    // on Wi-Fi and in Bluetooth range at once, so this is a map rather than the
+    // single `address` string it replaced.
+    let addresses: HashMap<String, String> = device
+        .addresses
+        .iter()
+        .map(|address| (address.medium.as_str().to_owned(), address.address.clone()))
+        .collect();
+    insert("addresses", Value::from(addresses));
+
+    // The medium the daemon would actually use, so a client can show it without
+    // reimplementing the preference order -- which is the daemon's to decide.
+    insert(
+        "medium",
+        Value::from(
+            device
+                .best_address()
+                .map(|address| address.medium.as_str())
+                .unwrap_or_default()
+                .to_owned(),
+        ),
+    );
+
     dict
 }
 
@@ -276,6 +296,11 @@ pub struct RemoteDevice {
     pub id: String,
     pub name: String,
     pub reachable: bool,
+    /// The medium the daemon would use, as reported by the daemon. Empty when
+    /// the device is not reachable.
+    pub medium: String,
+    /// The address for that medium, if any.
+    pub address: Option<String>,
 }
 
 impl RemoteDevice {
@@ -294,6 +319,14 @@ impl RemoteDevice {
         Some(Self {
             id: string("id")?,
             name: string("name").unwrap_or_else(|| "Unknown device".to_owned()),
+            address: {
+                let medium = string("medium").unwrap_or_default();
+                dict.get("addresses")
+                    .and_then(|value| value.try_clone().ok())
+                    .and_then(|value| HashMap::<String, String>::try_from(value).ok())
+                    .and_then(|addresses| addresses.get(&medium).cloned())
+            },
+            medium: string("medium").unwrap_or_default(),
             reachable: dict
                 .get("reachable")
                 .and_then(|value| value.try_clone().ok())
@@ -348,6 +381,7 @@ mod tests {
         let mut registry = Registry::default();
         registry.apply(EndpointInfo {
             fullname: String::new(),
+            endpoint_id: Some(id.to_owned()),
             id: id.to_owned(),
             name: name.map(str::to_owned),
             ip: resolved.then(|| "10.0.0.7".to_owned()),
@@ -362,13 +396,22 @@ mod tests {
         String::try_from(dict[key].try_clone().unwrap()).unwrap()
     }
 
+    fn as_addresses(dict: &HashMap<String, OwnedValue>) -> HashMap<String, String> {
+        HashMap::try_from(dict["addresses"].try_clone().unwrap()).unwrap()
+    }
+
     #[test]
     fn a_reachable_device_renders_every_field() {
-        let dict = device_dict(&device("10.0.0.7:4321", Some("Pixel 6a"), true));
+        let dict = device_dict(&device("pixel-6a", Some("Pixel 6a"), true));
 
-        assert_eq!(as_string(&dict, "id"), "10.0.0.7:4321");
+        // The id is the device's own identity now, not its address.
+        assert_eq!(as_string(&dict, "id"), "pixel-6a");
         assert_eq!(as_string(&dict, "name"), "Pixel 6a");
-        assert_eq!(as_string(&dict, "address"), "10.0.0.7:4321");
+        assert_eq!(as_string(&dict, "medium"), "wifi_lan");
+        assert_eq!(
+            as_addresses(&dict).get("wifi_lan").map(String::as_str),
+            Some("10.0.0.7:4321")
+        );
         assert!(bool::try_from(dict["reachable"].try_clone().unwrap()).unwrap());
     }
 
@@ -376,9 +419,11 @@ mod tests {
     fn an_unresolved_device_is_reported_as_unreachable() {
         let dict = device_dict(&device("pending", None, false));
 
-        // Empty rather than absent: a client indexing the dict must not have to
-        // handle a missing key for a device that is merely not resolved yet.
-        assert_eq!(as_string(&dict, "address"), "");
+        // Present but empty rather than absent: a client indexing the dict must
+        // not have to handle a missing key for a device that is merely not
+        // resolved yet.
+        assert!(as_addresses(&dict).is_empty());
+        assert_eq!(as_string(&dict, "medium"), "");
         assert!(!bool::try_from(dict["reachable"].try_clone().unwrap()).unwrap());
         // display_name()'s fallback, so a picker never shows an empty row.
         assert_eq!(as_string(&dict, "name"), "Unknown device");
@@ -386,10 +431,25 @@ mod tests {
 
     #[test]
     fn the_dict_keys_are_stable() {
-        // Clients index these by name; renaming one is a breaking change.
+        // Clients index these by name; renaming one is a breaking change. This
+        // test caught the deliberate change from a single `address` string to
+        // the `addresses` map, which is what it is for.
         let dict = device_dict(&device("a", Some("x"), true));
         let mut keys: Vec<&str> = dict.keys().map(String::as_str).collect();
         keys.sort_unstable();
-        assert_eq!(keys, ["address", "id", "name", "reachable"]);
+        assert_eq!(keys, ["addresses", "id", "medium", "name", "reachable"]);
+    }
+
+    #[test]
+    fn a_client_can_read_back_what_the_daemon_wrote() {
+        // The two halves of the contract, checked against each other: clients
+        // use RemoteDevice::from_dict on exactly what device_dict produces.
+        let dict = device_dict(&device("pixel-6a", Some("Pixel 6a"), true));
+        let parsed = RemoteDevice::from_dict(&dict).expect("must parse");
+
+        assert_eq!(parsed.id, "pixel-6a");
+        assert_eq!(parsed.name, "Pixel 6a");
+        assert_eq!(parsed.medium, "wifi_lan");
+        assert!(parsed.reachable);
     }
 }

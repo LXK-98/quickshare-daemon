@@ -44,12 +44,12 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use rqs_lib::channel::{ChannelMessage, Message, MessageClient, TransferAction, TransferKind};
 use rqs_lib::hdl::info::TransferPayload;
-use rqs_lib::{EndpointInfo, OutboundPayload, RQS, SendInfo, TransferState, Visibility};
+use rqs_lib::{EndpointInfo, OutboundPayload, RQS, SendInfo, Target, TransferState, Visibility};
 use tokio::sync::broadcast::{Sender, error::RecvError};
 
 use crate::config::Config;
 use crate::dbus::{Command, Daemon1};
-use crate::devices::{IDLE_GRACE, Registry};
+use crate::devices::{IDLE_GRACE, Medium, Registry};
 use crate::meminfo::MemSnapshot;
 use crate::network::NetworkMonitor;
 use crate::notify::{Consent, Notifier, Urgency, format_bytes};
@@ -752,16 +752,31 @@ async fn start_outbound(
         })
         .ok_or_else(|| format!("no single device matches {target:?}"))?;
 
-    let addr = device
-        .addr
-        .clone()
+    // The daemon picks the medium, not the caller: it is the only component
+    // that knows what is reachable and what each one costs.
+    let address = device
+        .best_address()
+        .cloned()
         .ok_or_else(|| format!("{} has no address yet", device.display_name()))?;
+    let target = match address.medium {
+        Medium::WifiLan => Target::WifiLan {
+            addr: address.address,
+        },
+        // Named in `Medium` so a device's reachability can be described, but
+        // there is no transport behind it yet.
+        Medium::Bluetooth => {
+            return Err(format!(
+                "{} is only reachable over Bluetooth, which is not implemented yet",
+                device.display_name()
+            ));
+        }
+    };
 
     file_sender
         .send(SendInfo {
             id: device.id.clone(),
             name: device.display_name().to_owned(),
-            addr,
+            target,
             ob: OutboundPayload::Files(
                 paths
                     .iter()
