@@ -185,10 +185,11 @@ daemon's footprint.
       `org.quickshare.Daemon1`, verified against the live session bus including
       refcounted discovery leases released on client departure (D-013).
       `SendFiles` itself has not yet been driven through to a real transfer
-- [~] Outbound transfers with progress/result notifications — the outbound path
-      works and the daemon now reports it over D-Bus (`TransferPin`,
-      `TransferFinished`). **Desktop notifications for outbound transfers are
-      still not posted** — only the CLI reports them
+- [x] Outbound transfers with progress/result notifications — the daemon reports
+      them over D-Bus (`TransferPin`, `TransferFinished`) and posts one desktop
+      notification per transfer, updated in place from the PIN prompt to the
+      result. The notification mechanics are verified against GNOME Shell; the
+      integration has not been driven by a real transfer yet
 - [ ] Nautilus extension with device submenu (or zenity fallback)
 - [x] Small CLI: `quickshare-daemon send <files>` / `devices` for scripting —
       both drive the running daemon over D-Bus when there is one, and fall back

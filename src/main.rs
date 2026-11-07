@@ -447,7 +447,7 @@ async fn run() -> Result<()> {
                     &file_sender,
                     &mut restart_pending,
                     &active,
-                    emitter.as_ref(),
+                    &mut outbound,
                 )
                 .await;
             }
@@ -607,7 +607,7 @@ async fn handle_command(
     file_sender: &tokio::sync::mpsc::Sender<SendInfo>,
     restart_pending: &mut bool,
     active: &HashMap<String, ActiveTransfer>,
-    emitter: Option<&zbus::object_server::SignalEmitter<'_>>,
+    outbound: &mut HashMap<String, OutboundTransfer>,
 ) {
     match command {
         Command::StartDiscovery { holder, reply } => {
@@ -685,10 +685,8 @@ async fn handle_command(
             paths,
             reply,
         } => {
-            let _ = reply.send(start_outbound(registry, file_sender, &target, &paths).await);
-            // A send does not change the device list, but a client that just
-            // sent may want to re-read it; cheap enough not to withhold.
-            let _ = emitter;
+            let _ =
+                reply.send(start_outbound(registry, file_sender, &target, &paths, outbound).await);
         }
     }
 }
@@ -703,6 +701,7 @@ async fn start_outbound(
     file_sender: &tokio::sync::mpsc::Sender<SendInfo>,
     target: &str,
     paths: &[PathBuf],
+    outbound: &mut HashMap<String, OutboundTransfer>,
 ) -> Result<String, String> {
     // Validated before anything is handed over, so a bad path fails as an
     // error to the caller rather than as a transfer that dies later.
@@ -759,6 +758,16 @@ async fn start_outbound(
         })
         .await
         .map_err(|_| "the Quick Share service is not accepting transfers".to_owned())?;
+
+    // Recorded before any event can arrive, so the notifications have a name
+    // to use. The events themselves only echo back the name we supplied.
+    outbound.insert(
+        device.id.clone(),
+        OutboundTransfer {
+            device: device.display_name().to_owned(),
+            ..Default::default()
+        },
+    );
 
     Ok(device.id)
 }
@@ -841,7 +850,7 @@ async fn handle_event(
     // prompt: the person being asked to accept is at the *other* device, so
     // there is nothing to ask here.
     if *kind == TransferKind::Outbound {
-        handle_outbound_event(id, client, emitter, outbound).await;
+        handle_outbound_event(id, client, emitter, outbound, notifier).await;
         return;
     }
 
@@ -1101,8 +1110,17 @@ fn spawn_received_files_notification(notifier: Arc<Notifier>, source: String, pa
 /// docs/RQS_LIB_NOTES.md.
 #[derive(Debug, Default)]
 struct OutboundTransfer {
+    /// The recipient's name, recorded when the transfer was started.
+    ///
+    /// Taken from the device we resolved rather than from the events, which
+    /// carry the name we supplied and would leave nothing to show if a
+    /// transfer somehow arrived unrecorded.
+    device: String,
     pin_announced: bool,
     started_sending: bool,
+    /// The notification showing this transfer, replaced in place as it
+    /// progresses so one transfer produces one notification.
+    notification: Option<u32>,
 }
 
 /// Reports an outbound transfer's progress over D-Bus.
@@ -1114,9 +1132,17 @@ async fn handle_outbound_event(
     client: &MessageClient,
     emitter: Option<&zbus::object_server::SignalEmitter<'_>>,
     outbound: &mut HashMap<String, OutboundTransfer>,
+    notifier: &Arc<Notifier>,
 ) {
     let state = client.state.clone().unwrap_or_default();
     let entry = outbound.entry(id.to_owned()).or_default();
+    // Falls back only if a transfer somehow arrives unrecorded; `start_outbound`
+    // normally seeds this.
+    let device = if entry.device.is_empty() {
+        "the device".to_owned()
+    } else {
+        entry.device.clone()
+    };
 
     if !entry.pin_announced {
         if let Some(pin) = client.metadata.as_ref().and_then(|m| m.pin_code.as_deref()) {
@@ -1126,6 +1152,21 @@ async fn handle_outbound_event(
                 if let Err(err) = Daemon1::transfer_pin(emitter, id, pin).await {
                     tracing::debug!("could not emit TransferPin: {err}");
                 }
+            }
+
+            // The PIN has to reach whoever is standing at the other device, and
+            // a client driving this from a file manager has nowhere to print
+            // it. Critical urgency so GNOME does not fade it before they look.
+            match notifier
+                .show(
+                    &format!("Accept on {device}"),
+                    &format!("PIN {pin} — check the device shows the same code"),
+                    Urgency::Critical,
+                )
+                .await
+            {
+                Ok(notification) => entry.notification = Some(notification),
+                Err(err) => tracing::warn!(%id, "could not post the PIN notification: {err:#}"),
             }
         }
     }
@@ -1159,12 +1200,37 @@ async fn handle_outbound_event(
         return;
     };
 
+    let notification = entry.notification;
     outbound.remove(id);
     tracing::info!(%id, succeeded, error = %error, "outbound transfer ended");
+
     if let Some(emitter) = emitter {
         if let Err(err) = Daemon1::transfer_finished(emitter, id, succeeded, &error).await {
             tracing::debug!("could not emit TransferFinished: {err}");
         }
+    }
+
+    let (summary, body) = if succeeded {
+        (format!("Sent to {device}"), String::new())
+    } else {
+        // The reason is the whole value of a failure notification: "couldn't
+        // send" on its own tells the user nothing they can act on.
+        (format!("Couldn't send to {device}"), error.clone())
+    };
+    let urgency = if succeeded {
+        Urgency::Low
+    } else {
+        Urgency::Normal
+    };
+
+    // Replaces the PIN notification where there was one, so a transfer leaves
+    // one notification behind rather than two.
+    let posted = match notification {
+        Some(existing) => notifier.replace(existing, &summary, &body, urgency).await,
+        None => notifier.show(&summary, &body, urgency).await,
+    };
+    if let Err(err) = posted {
+        tracing::warn!(%id, "could not post the outbound result notification: {err:#}");
     }
 }
 

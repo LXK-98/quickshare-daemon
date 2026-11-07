@@ -3,6 +3,41 @@
 Per-session record: what was done, what is verified, what broke, what is next.
 Newest first.
 
+## 2026-11-07 — Outbound notifications in the daemon
+
+An outbound transfer now produces **one** desktop notification, updated in
+place: "Accept on <device> — PIN nnnn" at critical urgency, replaced by "Sent
+to <device>" or "Couldn't send to <device>" with the reason.
+
+The PIN notification is the point of this. A client driving `SendFiles` from a
+file manager has nowhere to print a PIN, and without it the person at the other
+device has no way to confirm the transfer is really from here — so nothing can
+be accepted. The CLI prints it too, which means a terminal send reports twice;
+mild duplication, and preferable to a GUI send being unusable.
+
+`Notifier::replace` is back. I deleted it on 2026-09-30 as unused once inbound
+completions turned out to want fresh notifications; outbound genuinely needs it,
+because the "waiting" message and its result are one event.
+
+The recipient's name is recorded in `start_outbound` when the device is
+resolved, not read from the transfer events — those only echo back the name we
+supplied, which would leave nothing to show for a transfer that somehow arrived
+unrecorded.
+
+**Verified:** the exact two-step sequence against GNOME Shell. `replace` reused
+notification id 367 rather than stacking a second one, and both the success and
+failure shapes post.
+
+**Not verified:** the integration itself. `SendFiles` resolves only against
+discovered devices — it correctly refused a fabricated `127.0.0.1:1` target —
+so the notification path cannot be reached without a real device. Needs one send
+to the phone.
+
+48/48 tests, clippy clean. Also dropped an unused `emitter` parameter from
+`handle_command` rather than silencing the warning.
+
+---
+
 ## 2026-11-07 — The CLI is now a D-Bus client
 
 `devices` and `send` use the running daemon when there is one and fall back to

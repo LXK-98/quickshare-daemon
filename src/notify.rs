@@ -130,6 +130,25 @@ impl Notifier {
             .await
     }
 
+    /// Replaces an earlier notification in place, keeping its position.
+    ///
+    /// Used for outbound transfers: the "waiting to be accepted" message and
+    /// the result that supersedes it are one event, and reusing the id avoids a
+    /// stack of notifications about a single transfer.
+    ///
+    /// Removed once as unused when completion notifications turned out not to
+    /// need it; back because outbound ones do.
+    pub async fn replace(
+        &self,
+        id: u32,
+        summary: &str,
+        body: &str,
+        urgency: Urgency,
+    ) -> Result<u32> {
+        self.notify_inner(summary, body, &[], urgency, Expiry::ServerDefault, id)
+            .await
+    }
+
     /// Closes a notification.
     pub async fn close(&self, id: u32) -> Result<()> {
         self.proxy
