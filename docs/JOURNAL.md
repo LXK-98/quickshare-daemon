@@ -3,6 +3,49 @@
 Per-session record: what was done, what is verified, what broke, what is next.
 Newest first.
 
+## 2026-11-08 — Found the Quick Share Bluetooth UUID, and proved the medium is real
+
+Two results that unblock the transport, from `docs/BLUETOOTH_FINDINGS.md`.
+
+**Quick Share genuinely uses classic Bluetooth with no shared network.** A
+Z Fold → Pixel transfer with the Pixel's Wi-Fi off, captured from the Z Fold's
+HCI log, shows `Create Connection` → `Connect Complete` to
+`AA:BB:CC:11:22:33` (the Pixel), handle 7, BR-ACL. Not a hotspot fallback —
+the `BLUETOOTH` medium.
+
+**The service UUID is almost certainly
+`a82efa21-ae5c-3dde-9bbc-f16da7b16c5a`.** An SDP query to the Pixel, with its
+Bluetooth settings page open so it was discoverable, returned twelve standard
+profiles (OBEX, A2DP, HFP, PBAP, MAP, PAN…) and exactly one vendor-specific
+entry. A web search did not corroborate it, so this is inference, not fact —
+but it is the only non-standard UUID on a phone that had just accepted a Quick
+Share transfer over classic Bluetooth.
+
+That makes the previously-inconclusive inverted experiment decisive: register
+an RFCOMM profile with this UUID, make the adapter discoverable, Wi-Fi off on
+the phone, and see whether it offers us.
+
+**Capturing an Android HCI log without root** took several wrong turns, now
+recorded so they are not repeated: the bug report contains no Bluetooth log at
+all; the "HCI snoop log socket" setting listens on no port we could find; and
+`/data/log/bt/` is root-only. What works is
+`adb shell dumpsys bluetooth_manager`, which embeds a base64+zlib **btsnooz v2**
+blob. Converter kept at `docs/btsnooz2btsnoop.py`.
+
+Its limit is in the name — a *summary*. Of 6990 records, 5742 events and 1242
+commands but only **6 ACL**, so L2CAP/SDP/RFCOMM payloads are absent. That is
+why the UUID had to come from an SDP query rather than the capture.
+
+**Two process notes.** I spent three rounds guessing the btsnooz record layout
+before reading the published format, which took one call and got it right
+immediately — my guesses all assumed HCI packet types 1–4 when btsnooz uses its
+own enum (`0x10` in-event, `0x20` out-command). And several timed experiments
+were wasted because the capture window closed before Alex could see the
+instruction; asking first and running after is the correct order for anything
+needing a phone in hand.
+
+---
+
 ## 2026-11-07 — Bluetooth discovery investigated: the plan was wrong
 
 Full writeup in `docs/BLUETOOTH_FINDINGS.md`. Investigated before writing

@@ -79,6 +79,73 @@ offered, so the negative tells us little.
 
 The adapter was reverted to `Discoverable: no`, `Pairable: no` afterwards.
 
+## Breakthrough: the Pixel's SDP record
+
+2026-11-08. With the Pixel's Bluetooth settings page open (Android is only
+discoverable while that screen shows), a classic inquiry from this laptop
+returned its full SDP record:
+
+```
+Name: Pixel 6a   Class: 0x005a020c   Icon: phone
+UUID: OBEX Object Push, Audio Source, A/V Remote Control Target,
+      A/V Remote Control, Headset AG, PANU, NAP, Handsfree Audio Gateway,
+      SIM Access, Phonebook Access Server, PnP Information,
+      Message Access Server
+UUID: Vendor specific          (a82efa21-ae5c-3dde-9bbc-f16da7b16c5a)
+```
+
+**`a82efa21-ae5c-3dde-9bbc-f16da7b16c5a` is the only vendor-specific entry**;
+everything else is a standard Bluetooth profile. This is very likely the Quick
+Share / Nearby Connections RFCOMM service — the value the transport work has
+been blocked on.
+
+**Stated as inference, not fact.** A web search did not corroborate the UUID,
+and it could in principle belong to another Google service on the device. What
+supports it: it is the sole non-standard UUID, and this same phone accepted a
+Quick Share transfer over classic Bluetooth minutes earlier (below).
+
+The decisive confirmation is cheap now: register an RFCOMM profile with this
+UUID here, make the adapter discoverable, and see whether the phone offers this
+machine as a Quick Share target with Wi-Fi off — the inverted experiment that
+was inconclusive before only because we had no UUID to register.
+
+## Confirmed: Quick Share really does use classic Bluetooth
+
+A Z Fold 8 → Pixel transfer with the Pixel's Wi-Fi off, captured from the Z
+Fold's HCI log, shows a classic ACL connection to the Pixel during the
+transfer:
+
+```
+< HCI Command: Create Connection      Address: AA:BB:CC:11:22:33 (Google, Inc.)
+> HCI Event: Role Change              Role: Peripheral
+> HCI Event: Connect Complete         Handle: 7  Link type: ACL  Status: Success
+```
+
+So the `BLUETOOTH` medium is genuinely used when no network is shared, rather
+than the devices falling back to a hotspot. `AA:BB:CC:11:22:33` is the Pixel's
+classic BD address.
+
+## How to capture an Android HCI log without root
+
+Worth recording, because it took several wrong turns:
+
+1. The **bug report contains no Bluetooth log at all** on One UI — no
+   `/data/misc/bluetooth/logs/` entry. Do not bother with it.
+2. The developer setting "Enable Bluetooth HCI snoop log socket" claims to
+   expose the log on a local socket, but **nothing listens on tcp:8872** (or
+   40165, or 6800) even after a Bluetooth restart.
+3. `/data/log/bt/` exists but is `bluetooth:bluetooth`, so `adb shell` cannot
+   read it.
+4. **What works:** `adb shell dumpsys bluetooth_manager` embeds the log between
+   `BEGIN:BTSNOOP_LOG_SUMMARY` and `END:BTSNOOP_LOG_SUMMARY` as
+   `base64 { version:i8, last_timestamp_ms:u64, deflate { records } }`.
+   Converter at `docs/btsnooz2btsnoop.py`, output readable by `btmon -r`.
+
+**Its limitation is in the name: it is a *summary*.** Of 6990 records, 5742
+were HCI events and 1242 commands — but only **6 were ACL**. L2CAP, SDP and
+RFCOMM payloads are therefore absent, which is why the UUID had to come from an
+SDP query instead. Connection setup and BLE activity are fully visible.
+
 ## Where this leaves it: blocked on protocol knowledge, not on code
 
 The groundwork is done and useful regardless — the handshake is transport-generic
