@@ -142,13 +142,20 @@ class QuickShareMenuProvider(GObject.GObject, Nautilus.MenuProvider):
         fallback.
         """
         self.daemon.start_discovery()
+        self._notify(
+            "Looking for devices",
+            "Open Quick Share on the device you want to send to.",
+        )
 
         def poll(attempt: int = 0) -> bool:
             devices = [d for d in self.daemon.devices() if d.get("reachable")]
             if not devices:
-                # ~15s, which is about how long a phone takes to appear after
-                # its share sheet is opened.
-                return GLib.SOURCE_CONTINUE if attempt < 15 else self._no_devices()
+                # 45s, matching the CLI's send wait and for the same reason:
+                # a phone only advertises while its Quick Share screen is
+                # open, and nobody can open it and click a menu at once. An
+                # earlier 15s limit gave up before a phone had appeared, which
+                # looked like a broken extension rather than impatience.
+                return GLib.SOURCE_CONTINUE if attempt < 45 else self._no_devices()
             self._choose(devices, paths)
             return GLib.SOURCE_REMOVE
 
@@ -163,7 +170,8 @@ class QuickShareMenuProvider(GObject.GObject, Nautilus.MenuProvider):
     def _no_devices(self) -> bool:
         self._notify(
             "No devices found",
-            "Open Quick Share on the other device so it becomes visible.",
+            "Open Quick Share on the other device, wait a few seconds, "
+            "then try again. Discovery keeps running in the background.",
         )
         return GLib.SOURCE_REMOVE
 

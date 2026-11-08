@@ -198,8 +198,8 @@ daemon's footprint.
 - [x] Nautilus extension with device submenu (or zenity fallback) —
       `data/quickshare_nautilus.py`, both: a submenu of known devices plus an
       "Other device…" entry that opens a zenity picker and waits for discovery.
-      Loads and instantiates cleanly; **not yet exercised through the Nautilus
-      UI**
+      **Confirmed working in the Nautilus UI**, both the submenu and the
+      picker
 - [x] Small CLI: `quickshare-daemon send <files>` / `devices` for scripting —
       both drive the running daemon over D-Bus when there is one, and fall back
       to their own short-lived service otherwise. Verified on both paths, and a

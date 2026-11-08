@@ -3,6 +3,30 @@
 Per-session record: what was done, what is verified, what broke, what is next.
 Newest first.
 
+## 2026-11-08 — Nautilus extension works; the first failure was impatience
+
+Confirmed in the UI: the submenu lists the phone, and the "Other device…"
+picker works too. Both paths exercised against a real device.
+
+**The first attempt reported "No devices found" while the daemon's own log
+showed it had resolved the Pixel.** I suspected my D-Bus unpacking, tested it,
+and was wrong — `result[0]` yields real Python dicts and `d.get("reachable")`
+returns `True`. `ListDevices` answered in about six seconds once the phone was
+actually advertising.
+
+So it was timing: the poll gave up after 15s, before the phone had appeared.
+Raised to 45s, matching the CLI's send wait and for the same reason — a phone
+only advertises while its Quick Share screen is open, and nobody can open that
+and click a menu simultaneously. The timeout message now says to retry rather
+than implying failure, and a "Looking for devices" notification goes up when
+the search starts, so the fallback no longer looks inert while it waits.
+
+Worth noting the failure mode: an impatient timeout presented as a definitive
+"no devices", which reads as a broken extension. The daemon was working the
+whole time.
+
+---
+
 ## 2026-11-08 — Nautilus extension
 
 `data/quickshare_nautilus.py`, installed to
