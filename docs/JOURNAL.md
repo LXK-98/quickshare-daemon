@@ -3,6 +3,37 @@
 Per-session record: what was done, what is verified, what broke, what is next.
 Newest first.
 
+## 2026-11-08 — Pairing does not help: the Bluetooth path is account-gated
+
+Published the SDP record exactly as captured — UUID, RFCOMM channel 10, service
+name `NearbySharing` — with a pairing agent. The Pixel paired (`Paired: yes`,
+`Bonded: yes`, passkey auto-confirmed). **Quick Share still listed nothing in
+either direction, and no RFCOMM connection was attempted.**
+
+Four observations now agree:
+
+1. The Z Fold connected to the Pixel's address with **no inquiry and no scan**.
+2. That transfer needed **no acceptance** — the same-account "Your devices"
+   flow.
+3. **Bluetooth bonding does not substitute**: we are paired and still invisible,
+   so the list Quick Share draws on is not BlueZ's.
+4. No third-party implementation uses Bluetooth, despite the rest of the
+   protocol being well reverse-engineered.
+
+So the peer address comes from Google account sync — a Play Services feature,
+not a protocol one — and a Linux client cannot enter that list.
+
+Unlike the earlier "not achievable" claim, which a capture disproved within the
+hour, this one has evidence behind it. It could still be wrong, but every
+observation available here points the same way.
+
+**Stopping the Bluetooth thread.** Left in the findings doc for anyone
+returning to it: Linux-to-Linux (both ends ours, groundwork already in place),
+and the unexamined `0xFEF3` advert the Pixel received just before the
+connection — the one observed signal still unaccounted for.
+
+---
+
 ## 2026-11-08 — A full HCI capture: Quick Share does use RFCOMM, and I was wrong
 
 A **Pixel** bug report includes `FS/data/misc/bluetooth/logs/btsnoop_hci.log`

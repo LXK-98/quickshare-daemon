@@ -225,11 +225,15 @@ Bluetooth: the receiver publishes an SDP record with UUID
 `a82efa21-ae5c-3dde-9bbc-f16da7b16c5a`, service name `NearbySharing`, on RFCOMM
 channel 10, and the sender queries SDP and connects.
 
-The open gap is discovery: the sender connects to an address it already knows
-rather than searching, so a Linux box must get into that list — most likely by
-pairing once. That is the next experiment. Full findings in
-`docs/BLUETOOTH_FINDINGS.md`, including an earlier conclusion of mine that this
-was impossible, which the capture disproved.
+The gap is discovery, and it looks closed to us: the sender connects to an
+address it already knows rather than searching, and **Bluetooth pairing does
+not put us in that list** (tested). The address appears to come from Google
+account sync, a Play Services feature rather than a protocol one.
+
+**Thread stopped here**, with the reasoning and the remaining leads in
+`docs/BLUETOOTH_FINDINGS.md`. The groundwork it produced is kept and useful:
+a transport-generic handshake (D-015), identity separated from address (D-016),
+and four fixes to `rqs_lib` found along the way.
 
 Groundwork done along the way and worth keeping: the handshake is generic over
 its transport (D-015), device identity is separate from address (D-016), and

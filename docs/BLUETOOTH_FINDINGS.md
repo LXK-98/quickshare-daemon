@@ -285,16 +285,53 @@ Two reasons, neither of which was the UUID:
    sender connects to an address it already knows; it does not go looking. A
    Linux box that has never been paired is not in any such list.
 
-### The next experiment, and it is well-founded now
+### Pairing was tried, and does not help
 
-**Pair the laptop with the Pixel over classic Bluetooth first**, then publish
-the SDP record exactly as above — UUID, RFCOMM channel, service name
-`NearbySharing`. Pairing is what puts our BD address in the phone's known-device
-list, which is the gap the previous attempt had.
+2026-11-08. Published the SDP record exactly as captured — UUID, RFCOMM channel
+10, service name `NearbySharing` — with a pairing agent. The Pixel paired
+successfully:
 
-If that works, a Bluetooth transport becomes real: the frame format is
-medium-agnostic, the handshake is already transport-generic (D-015), and
-`Target::Bluetooth` is waiting for a stream.
+```
+Name: Pixel 6a   Paired: yes   Bonded: yes
+UUID: Vendor specific  (a82efa21-ae5c-3dde-9bbc-f16da7b16c5a)
+```
+
+**Quick Share still listed nothing, in either direction.** No RFCOMM connection
+was attempted.
+
+### Conclusion: the Bluetooth path is gated on Google account linkage
+
+Four pieces of evidence, which now agree:
+
+1. The Z Fold connected to the Pixel's BD address with **no inquiry and no
+   scan** — it already knew the address.
+2. That transfer required **no acceptance** on the Pixel: the same-account
+   "Your devices" flow.
+3. **Bluetooth bonding does not substitute.** We are paired and still invisible,
+   so the address list Quick Share draws on is not BlueZ's.
+4. No third-party implementation uses Bluetooth, despite the protocol being
+   otherwise well reverse-engineered.
+
+The peer address appears to come from Google account sync — a Play Services
+feature rather than a protocol one. A Linux client cannot enter that list
+without being a Google-account-registered device.
+
+**This is a conclusion with evidence behind it**, unlike the earlier one that a
+capture disproved. It could still be wrong — a mechanism we have not observed
+might exist — but every observation available here points the same way.
+
+### What would still be worth trying, if someone returns to this
+
+- **Linux-to-Linux.** Both ends ours, so any transport can be agreed. The
+  groundwork already supports it: generic handshake (D-015), `Target::Bluetooth`
+  slot, `Medium::Bluetooth` in the device model.
+- **`0xFEF3`.** The BLE advert the Pixel received before the connection carried
+  service data under `0xFEF3`, payload `11 01 d0 36 9d 5d`, not `0xFE2C`. What
+  that encodes is unexamined, and it is the one observed signal not yet
+  accounted for.
+- **A capture with a non-account-linked Android** sending over Bluetooth, if
+  such a thing even happens. That would show whether the account gate is real
+  or whether we simply never produced the right advertisement.
 
 ## Where this leaves it: blocked on protocol knowledge, not on code
 
