@@ -124,6 +124,7 @@ uses the GitHub one; only `dnf copr enable` takes the FAS one.
    copr-cli create quickshare-daemon \
      --chroot fedora-43-x86_64 \
      --chroot fedora-44-x86_64 \
+     --chroot fedora-45-x86_64 \
      --chroot fedora-rawhide-x86_64 \
      --enable-net on \
      --description "Headless Quick Share (Nearby Share) daemon for Linux" \
@@ -131,7 +132,19 @@ uses the GitHub one; only `dnf copr enable` takes the FAS one.
    ```
 
    x86_64 only, because that is the only architecture the release binary is
-   built for and the only one this has been tested on.
+   built for and the only one this has been tested on. `copr-cli
+   list-chroots` shows what is currently offered.
+
+   Confirm `--enable-net` actually took, because the build fails late and
+   confusingly without it:
+
+   ```bash
+   curl -s 'https://copr.fedorainfracloud.org/api_3/project?ownername=lxk-98&projectname=quickshare-daemon' |
+     python3 -c 'import json,sys; print(json.load(sys.stdin)["enable_net"])'
+   ```
+
+   The project lives at
+   <https://copr.fedorainfracloud.org/coprs/lxk-98/quickshare-daemon/>.
 
 ### Building a version
 
