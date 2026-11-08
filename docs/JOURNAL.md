@@ -3,6 +3,58 @@
 Per-session record: what was done, what is verified, what broke, what is next.
 Newest first.
 
+## 2026-11-08 (later) — Published: GitHub release and COPR
+
+Both distribution channels are live. v0.1.0 is tagged, and
+`dnf copr enable lxk-98/quickshare-daemon` works.
+
+**Tagging found two bugs in a release path nothing had ever exercised.**
+
+- `release.yml` published the tarball and its checksum but not `install.sh`,
+  while the README and the generated release notes both told people to
+  download exactly that. The documented install command 404'd.
+- The archive holds one `quickshare-daemon-<tag>-x86_64-linux/` directory, but
+  the script read the binary, the unit and the extension straight out of the
+  extraction root. Even downloadable, it would have died on `install: cannot
+  stat`. Fixed with `--strip-components=1`.
+
+Both were found by running the thing rather than reading it: `XDG_BIN_HOME`
+and `XDG_DATA_HOME` pointed at a scratch prefix exercise the real script
+against the real release without touching an install. Install, re-run (reports
+`Already on v0.1.0.`) and `--uninstall` all verified that way.
+
+The fixed `install.sh` was uploaded to the existing v0.1.0 rather than
+re-cutting the tag — nobody had the broken one, and moving a published tag is
+worse than adding an asset.
+
+**COPR, and what the written-down procedure got wrong.**
+
+- `URL:` interpolated `%{getenv:COPR_OWNER}`, which is set nowhere COPR
+  builds. `Source0` would have pointed at `github.com//quickshare-daemon`.
+- The owner is the *FAS* username, `lxk-98`, not the GitHub owner `LXK-98`.
+  The README's `dnf copr enable` line would not have resolved.
+- Kerberos does **not** avoid the web UI, which is what the first draft of
+  RELEASING.md implied. COPR creates the user record on first web login; until
+  it exists, a valid GSSAPI ticket is refused outright. That first login was
+  returning 504 for a while — COPR's authenticated dashboard timing out during
+  their Pulp migration, with every anonymous page staying fast, so the status
+  page showed nothing.
+
+Build 11287654 succeeded on fedora-43, 44, 45 and rawhide in about eight
+minutes. Verified from the repo metadata rather than by installing:
+`/usr/bin/quickshare-daemon` and the systemd user unit in the main package,
+the Nautilus extension alone in the `noarch` subpackage, `bluez` and a
+notification daemon as `Recommends`. All four `.repo` files resolve.
+
+`--enable-net on` is load-bearing: COPR builds have had no network since June
+2022, and this tree cannot build offline — 276 crates and three git
+dependencies. Vendoring works as a fallback (`cargo vendor` resolves the git
+sources correctly) but measures 48 MB compressed, 456 MB unpacked.
+
+**Not verified.** The spec has never been built in mock locally — that needs
+`mock` group membership and a re-login. COPR is currently the only thing that
+has compiled it.
+
 ## 2026-11-08 — Scrubbed personal data, then packaging
 
 **Scrubbed before going public.** The docs had accumulated real identifiers
