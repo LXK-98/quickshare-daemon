@@ -686,8 +686,7 @@ async fn follow_transfer(
                 TransferState::SendingFiles => {
                     started_sending = true;
                     if let Some(m) = &client.metadata {
-                        if m.total_bytes > 0 {
-                            let percent = m.ack_bytes * 100 / m.total_bytes;
+                        if let Some(percent) = (m.ack_bytes * 100).checked_div(m.total_bytes) {
                             eprint!(
                                 "\r  {percent:>3}%  {} / {}   ",
                                 format_bytes(m.ack_bytes),

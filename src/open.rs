@@ -176,7 +176,7 @@ fn modified_at(path: &Path) -> Option<std::time::SystemTime> {
 /// separator. Received filenames come from the sender and routinely contain
 /// spaces, `#`, `?` and non-ASCII — all of which break a naive `format!`.
 fn file_uri(path: &Path) -> String {
-    const UNRESERVED_EXTRA: [u8; 5] = [b'-', b'_', b'.', b'~', b'/'];
+    const UNRESERVED_EXTRA: [u8; 5] = *b"-_.~/";
 
     let mut uri = String::from("file://");
     for byte in path.to_string_lossy().as_bytes() {
