@@ -60,6 +60,23 @@ startup error rather than a setting that silently does nothing.
 `auto_accept_from` matches the name a sender advertises for itself, which
 nothing verifies. It is a convenience, not an authorisation check.
 
+## Nautilus integration
+
+A "Send with Quick Share" menu for Nautilus, listing nearby devices from the
+running daemon:
+
+```bash
+sudo dnf install nautilus-python
+mkdir -p ~/.local/share/nautilus-python/extensions
+cp data/quickshare_nautilus.py ~/.local/share/nautilus-python/extensions/
+nautilus -q    # restart Nautilus to load it
+```
+
+It needs the daemon running, and shows nothing if there isn't one. Known
+devices appear as a submenu; "Other device…" opens a picker that waits for
+discovery, which is the usual path the first time, since Nautilus builds the
+menu faster than mDNS answers.
+
 ## Credits and license
 
 **GPL-3.0-or-later.** This is a requirement, not a preference: the daemon

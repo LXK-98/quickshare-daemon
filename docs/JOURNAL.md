@@ -3,6 +3,43 @@
 Per-session record: what was done, what is verified, what broke, what is next.
 Newest first.
 
+## 2026-11-08 — Nautilus extension
+
+`data/quickshare_nautilus.py`, installed to
+`~/.local/share/nautilus-python/extensions/`. Nautilus 50.4 wants typelib
+**4.1**, not the 4.0 Packet's extension requires.
+
+Structure is adapted from Packet's `packet_nautilus.py.in` but the menu differs:
+Packet hands files to its GUI, which then shows a picker. There is no GUI here,
+so the device list has to be in the menu itself.
+
+- **Uses GDBus, not `python3-dbus`.** Nautilus already depends on GIO, so the
+  extension adds no dependency.
+- **Holds a discovery lease and releases it after 60 s.** Nautilus is
+  long-lived and the daemon keys leases on the client's bus name, so a lease
+  taken when a menu opens would otherwise run mDNS and the BLE advertiser all
+  day. This is the first real consumer of the refcounted leases from D-013.
+- **2-second call timeout**, because this runs while Nautilus builds a context
+  menu and a stalled call would freeze the file manager.
+- **The zenity fallback is the common path, not the exception.** The menu is
+  built synchronously but discovery takes seconds, so the submenu is usually
+  empty on first open — "Other device…" opens a picker that polls for ~15 s.
+  PLAN.md anticipated exactly this.
+- Directories, non-local files and a missing daemon all produce an empty menu
+  rather than an item that fails.
+
+**Verified:** imports cleanly against the real typelib, instantiates,
+implements `MenuProvider`, returns `[]` with no daemon. The `Daemon` client
+half was driven against a live daemon — proxy reachable, `StartDiscovery`
+logged with a holder, `ListDevices` answered, `StopDiscovery` sent.
+
+**Not verified:** the menu actually appearing in Nautilus, and a send completing
+through it. Needs a human right-clicking a file.
+
+Note: Packet's extension is still installed alongside, so both items appear.
+
+---
+
 ## 2026-11-08 — Pairing does not help: the Bluetooth path is account-gated
 
 Published the SDP record exactly as captured — UUID, RFCOMM channel 10, service
