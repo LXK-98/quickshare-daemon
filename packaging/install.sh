@@ -63,7 +63,10 @@ say "Verifying checksum..."
 ( cd "$work" && sha256sum -c "$archive.sha256" >/dev/null ) ||
     die "checksum mismatch -- refusing to install"
 
-tar -xzf "$work/$archive" -C "$work"
+# --strip-components=1: the archive holds a single
+# quickshare-daemon-<tag>-x86_64-linux/ directory, and the paths below expect
+# its contents directly in $work.
+tar -xzf "$work/$archive" -C "$work" --strip-components=1
 
 mkdir -p "$BIN_DIR" "$UNIT_DIR"
 install -m0755 "$work/quickshare-daemon" "$BIN"

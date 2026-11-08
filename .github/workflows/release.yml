@@ -70,6 +70,7 @@ jobs:
           files: |
             quickshare-daemon-*-x86_64-linux.tar.gz
             quickshare-daemon-*-x86_64-linux.tar.gz.sha256
+            packaging/install.sh
           body: |
             Install or update on any Linux x86_64:
 

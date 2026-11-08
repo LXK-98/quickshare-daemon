@@ -66,8 +66,8 @@ menu if `nautilus-python` is present. It verifies a published SHA-256 before
 unpacking. **Re-run it to update**; `sh install.sh --uninstall` removes it,
 leaving your config and received files alone.
 
-The published binary needs glibc 2.35 or newer (Ubuntu 22.04, Fedora 36,
-Debian 12 and later). Older systems can build from source.
+The published binary needs glibc 2.34 or newer (RHEL 9, Fedora 35, Ubuntu
+22.04, Debian 12 and later). Older systems can build from source.
 
 #### There is no auto-update
 
