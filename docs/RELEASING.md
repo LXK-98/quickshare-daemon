@@ -165,11 +165,10 @@ copr-cli build lxk-98/quickshare-daemon ~/rpmbuild/SRPMS/quickshare-daemon-0.1.0
 
 ### Rebuilding automatically on a tag
 
-To avoid doing that by hand every release, add the spec as an SCM source and
-let COPR rebuild from git:
+This is configured. The package is an SCM source with auto-rebuild on:
 
 ```bash
-copr-cli add-package-scm quickshare-daemon \
+copr-cli edit-package-scm quickshare-daemon \
   --name quickshare-daemon \
   --clone-url https://github.com/LXK-98/quickshare-daemon.git \
   --commit main \
@@ -179,8 +178,42 @@ copr-cli add-package-scm quickshare-daemon \
   --webhook-rebuild on
 ```
 
-Then add COPR's webhook URL (shown under *Settings → Integrations* on the
-project page) to the GitHub repository. Pushes rebuild the package.
+(`add-package-scm` fails once a package exists — an uploaded SRPM creates one
+— so `edit-package-scm` converts it instead.)
+
+The GitHub half has to be added by hand once, because the webhook URL embeds a
+secret. From *Settings → Integrations* on the
+[COPR project page](https://copr.fedorainfracloud.org/coprs/lxk-98/quickshare-daemon/),
+copy the GitHub webhook URL, then either paste it into the repository's
+*Settings → Webhooks → Add webhook*, or:
+
+```bash
+gh api repos/LXK-98/quickshare-daemon/hooks -f name=web \
+  -f 'config[url]=PASTE_THE_COPR_URL' -f 'config[content_type]=json' \
+  -F 'events[]=create' -F active=true
+```
+
+**Subscribe to “Branch or tag creation” only — not “push”.** COPR rebuilds the
+*configured committish* (`main`), not the ref the event carries, so a `push`
+subscription would rebuild the same version on every documentation commit.
+The `create` event fires for new branches too, which at worst costs one
+redundant rebuild.
+
+#### What this means for the order of operations
+
+Because COPR builds `main`'s spec rather than the tag's, **the `Version:` bump
+must be on `main` before the tag is pushed.** Step 1 of “Cutting a release”
+above already does this, but it stops being a convention and becomes a
+requirement once the webhook is live:
+
+1. Bump `Version:` and `%changelog`, commit, push to `main`.
+2. Tag and push the tag.
+3. The `create` event reaches COPR, which builds `main`'s spec — by now
+   carrying the new version — and its `Source0` resolves to the tag that was
+   just pushed.
+
+Get the order wrong and COPR rebuilds the previous version, or fails fetching
+a `Source0` for a tag that does not exist yet.
 
 ### Checking the spec before handing it to COPR
 
