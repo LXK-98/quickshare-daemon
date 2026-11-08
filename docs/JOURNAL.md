@@ -975,8 +975,8 @@ which started a daemon instead.
 - Removed the dead `origin` remote, so git operations no longer point at a
   repository that is being deleted.
 - `~/.config/quickshare-daemon/config.toml` still had
-  `device_name = "dell.fritz.box"` from before the FQDN fix — the file is
-  written once, so fixing the default did not fix the existing file. Now `dell`.
+  the DHCP-assigned FQDN from before the FQDN fix — the file is written once,
+  so fixing the default did not fix the existing file. Now the short hostname.
 - `cargo install --path .` so the systemd unit's `ExecStart`
   (`%h/.cargo/bin/quickshare-daemon`) resolves. It previously pointed at
   nothing.
@@ -1079,8 +1079,8 @@ process still starting, and an empty `MALLOC_ARENA_MAX=` is not the same as
 unset. Both mistakes were mine and both would have gone into the docs as fact
 if the run had not been repeated.
 
-**Fixed:** the default device name was the FQDN (`dell.fritz.box`), which is
-what a phone would have shown on its share sheet. Now the short hostname. An
+**Fixed:** the default device name was the DHCP-assigned FQDN, which is what a
+phone would have shown on its share sheet. Now the short hostname. An
 existing `config.toml` keeps the old value — delete it to regenerate.
 
 **The one thing left in Phase 1:** sending an actual file from a phone. It

@@ -206,7 +206,7 @@ impl Config {
 /// file makes it visible and editable instead of mysterious.
 ///
 /// The domain is stripped because this string is shown on a phone's share
-/// sheet: a DHCP-assigned FQDN like `dell.fritz.box` is what the machine is
+/// sheet: a DHCP-assigned FQDN like `laptop.lan` is what the machine is
 /// called on the network, not what its owner calls it.
 fn default_device_name() -> String {
     std::fs::read_to_string("/proc/sys/kernel/hostname")
@@ -234,8 +234,8 @@ mod tests {
 
     #[test]
     fn the_default_device_name_drops_the_domain() {
-        // The real machine this was developed on reports `dell.fritz.box`,
-        // which is not a name anyone would choose to see on their phone.
+        // The machine this was developed on reports an FQDN from DHCP, which
+        // is not a name anyone would choose to see on their phone.
         let name = default_device_name();
         assert!(!name.contains('.'), "got {name:?}");
         assert!(!name.is_empty());

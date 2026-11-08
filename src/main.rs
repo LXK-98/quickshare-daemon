@@ -57,9 +57,8 @@ use crate::notify::{Consent, Notifier, Urgency, format_bytes};
 /// What `--help` prints.
 ///
 /// There are no options: everything is configured through the file named below,
-/// which is the point of the design. The subcommands PLAN.md's Phase 3 calls for
-/// (`send`, `devices`) do not exist yet, and saying so beats a bare usage line
-/// that leaves someone guessing.
+/// which is the point of the design. The verbs are listed in full rather than
+/// behind a `help <verb>`, because there are three of them.
 const USAGE: &str = "\
 quickshare-daemon — send and receive files over Quick Share
 
@@ -79,8 +78,8 @@ Logging goes to stderr; filter it with RUST_LOG, e.g.
   RUST_LOG=quickshare_daemon=debug,rqs_lib=debug
 
 Note: the other device must have its Quick Share sheet open to be discoverable.
-`devices` and `send` currently run their own short-lived service rather than
-talking to a running daemon.";
+`devices` and `send` use the running daemon when there is one, and start their
+own short-lived service when there is not.";
 
 /// How long `devices` spends collecting before printing the list.
 ///
