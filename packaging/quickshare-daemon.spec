@@ -10,7 +10,10 @@ Release:        1%{?dist}
 Summary:        Headless Quick Share (Nearby Share) daemon for Linux
 
 License:        GPL-3.0-or-later
-URL:            https://github.com/%{getenv:COPR_OWNER}/quickshare-daemon
+# Hardcoded rather than read from the environment: COPR builds the SRPM on its
+# own builders, where no variable of ours is set, and an empty owner silently
+# produces an unfetchable Source0.
+URL:            https://github.com/LXK-98/quickshare-daemon
 Source0:        %{url}/archive/v%{version}/%{name}-%{version}.tar.gz
 
 BuildRequires:  cargo

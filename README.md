@@ -250,6 +250,7 @@ This project is documented as it was built, not after the fact.
 | [docs/BLUETOOTH_FINDINGS.md](docs/BLUETOOTH_FINDINGS.md) | Why the offline transport does not work, with captures. |
 | [docs/TRANSPORT_IDENTITY.md](docs/TRANSPORT_IDENTITY.md) | Design note on separating device identity from address. |
 | [docs/EXTENSION_PLAN.md](docs/EXTENSION_PLAN.md) | Plan for the file-manager integration. |
+| [docs/RELEASING.md](docs/RELEASING.md) | Cutting a release, and the COPR setup. |
 | [PLAN.md](PLAN.md) | The original build plan, with its status. |
 
 ## Credits and license

@@ -1,0 +1,173 @@
+# Releasing
+
+Two distribution channels, with different effort: GitHub releases are
+automatic, COPR needs a one-time setup and then a click (or a webhook) per
+version.
+
+## Cutting a release
+
+1. Bump `version` in `Cargo.toml` and the `Version:` and `%changelog` in
+   `packaging/quickshare-daemon.spec`. They must match: the spec's `Source0`
+   is `.../archive/v%{version}/...`, so a mismatch fetches a tag that does not
+   exist.
+2. Commit, then tag and push:
+
+   ```bash
+   git tag v0.1.0 && git push origin v0.1.0
+   ```
+
+`.github/workflows/release.yml` then builds on ubuntu-22.04, prints the binary
+size and the glibc floor into the log, and publishes three assets:
+
+| Asset | Why |
+| ----- | --- |
+| `quickshare-daemon-<tag>-x86_64-linux.tar.gz` | binary, systemd unit, Nautilus extension, README, LICENSE |
+| `...tar.gz.sha256` | `sha256sum -c` format, verified by the installer before unpacking |
+| `install.sh` | what the README tells people to download |
+
+The build runs on ubuntu-22.04 deliberately. A newer runner would raise the
+glibc floor of the published binary for no benefit.
+
+### Check it
+
+```bash
+curl -fsSL -o /tmp/install.sh \
+  https://github.com/LXK-98/quickshare-daemon/releases/latest/download/install.sh
+XDG_BIN_HOME=/tmp/qsd/bin XDG_DATA_HOME=/tmp/qsd/share sh /tmp/install.sh
+```
+
+Pointing the two XDG variables at a scratch directory exercises the real
+script against the real release without touching an existing install. Re-run
+it to check the update path reports `Already on <tag>.`, then
+`sh /tmp/install.sh --uninstall`.
+
+## COPR
+
+### The problem to decide first: network access
+
+COPR builds run in mock **without network access** — the default flipped to
+off in June 2022. This package cannot build that way: `cargo build` fetches
+276 crates from crates.io and three git dependencies (`rqs_lib` from our fork,
+and `mdns-sd` and `sys_metrics` from Martichou).
+
+So one of two things has to be true.
+
+**Either enable network for the project** — one flag, nothing in the
+repository changes:
+
+```bash
+copr-cli modify LXK-98/quickshare-daemon --enable-net on
+```
+
+**Or vendor the dependencies** so the build is genuinely offline. `cargo
+vendor` handles the git sources correctly, so this works, but it is not free:
+
+```bash
+cargo vendor --locked vendor/
+tar -czf vendor.tar.gz vendor/
+```
+
+That tarball is **48 MB compressed, 456 MB unpacked** — most of it code for
+platforms this never builds for. It would ship as a `Source1`, with a
+`.cargo/config.toml` written in `%prep` and `--offline` added to the build.
+
+Try the flag first. Vendoring is the fallback if COPR declines, and it is also
+what Fedora proper would require if this were ever submitted there.
+
+### One-time setup
+
+1. A [Fedora account](https://accounts.fedoraproject.org/) — the same FAS
+   account used for Bugzilla and the wiki.
+2. Sign in at [copr.fedorainfracloud.org](https://copr.fedorainfracloud.org/)
+   once, so the account exists on the COPR side.
+3. Install the client and get a token:
+
+   ```bash
+   sudo dnf install copr-cli
+   ```
+
+   Then open <https://copr.fedorainfracloud.org/api/> and paste what it shows
+   into `~/.config/copr`. The token expires; the same page reissues it.
+
+4. Create the project:
+
+   ```bash
+   copr-cli create quickshare-daemon \
+     --chroot fedora-43-x86_64 \
+     --chroot fedora-44-x86_64 \
+     --chroot fedora-rawhide-x86_64 \
+     --enable-net on \
+     --description "Headless Quick Share (Nearby Share) daemon for Linux" \
+     --instructions "dnf copr enable LXK-98/quickshare-daemon && dnf install quickshare-daemon"
+   ```
+
+   x86_64 only, because that is the only architecture the release binary is
+   built for and the only one this has been tested on.
+
+### Building a version
+
+The straightforward way, from a tag that already exists:
+
+```bash
+copr-cli build LXK-98/quickshare-daemon \
+  https://github.com/LXK-98/quickshare-daemon/releases/download/v0.1.0/quickshare-daemon-0.1.0-1.src.rpm
+```
+
+We do not publish an SRPM, so build one first:
+
+```bash
+spectool -g -R packaging/quickshare-daemon.spec    # fetches Source0 from the tag
+rpmbuild -bs packaging/quickshare-daemon.spec
+copr-cli build LXK-98/quickshare-daemon ~/rpmbuild/SRPMS/quickshare-daemon-0.1.0-1.*.src.rpm
+```
+
+### Rebuilding automatically on a tag
+
+To avoid doing that by hand every release, add the spec as an SCM source and
+let COPR rebuild from git:
+
+```bash
+copr-cli add-package-scm quickshare-daemon \
+  --name quickshare-daemon \
+  --clone-url https://github.com/LXK-98/quickshare-daemon.git \
+  --commit main \
+  --spec packaging/quickshare-daemon.spec \
+  --type git \
+  --method rpkg \
+  --webhook-rebuild on
+```
+
+Then add COPR's webhook URL (shown under *Settings → Integrations* on the
+project page) to the GitHub repository. Pushes rebuild the package.
+
+### Checking the spec before handing it to COPR
+
+The SRPM builds without any setup:
+
+```bash
+spectool -g -R packaging/quickshare-daemon.spec
+rpmbuild -bs packaging/quickshare-daemon.spec
+```
+
+A full rehearsal of what COPR will do needs mock, which needs group
+membership and a re-login:
+
+```bash
+sudo usermod -aG mock "$USER"      # log out and back in
+mock -r fedora-44-x86_64 --enable-network rebuild ~/rpmbuild/SRPMS/quickshare-daemon-*.src.rpm
+```
+
+`--enable-network` is what makes it match a COPR project with net enabled.
+Without it the build fails at the first crates.io fetch, which is exactly the
+failure COPR would show.
+
+### Things that have bitten this spec
+
+- `URL:` was `https://github.com/%{getenv:COPR_OWNER}/...`. COPR builds the
+  SRPM on its own builders where that variable does not exist, so the owner
+  came out empty and `Source0` pointed at `github.com//quickshare-daemon`.
+  Hardcoded now.
+- `%files` lists `%{_userunitdir}`, which only exists if `systemd-rpm-macros`
+  is in `BuildRequires`. It is — do not drop it.
+- The Nautilus extension is `BuildArch: noarch` in a subpackage so that
+  installing the daemon does not pull in `nautilus-python`.
