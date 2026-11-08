@@ -45,7 +45,7 @@ D-Bus API may still change.
 ### Fedora
 
 ```bash
-sudo dnf copr enable LXK-98/quickshare-daemon
+sudo dnf copr enable lxk-98/quickshare-daemon
 sudo dnf install quickshare-daemon
 systemctl --user enable --now quickshare-daemon
 ```

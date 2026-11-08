@@ -56,7 +56,7 @@ So one of two things has to be true.
 repository changes:
 
 ```bash
-copr-cli modify LXK-98/quickshare-daemon --enable-net on
+copr-cli modify lxk-98/quickshare-daemon --enable-net on
 ```
 
 **Or vendor the dependencies** so the build is genuinely offline. `cargo
@@ -74,20 +74,49 @@ platforms this never builds for. It would ship as a `Source1`, with a
 Try the flag first. Vendoring is the fallback if COPR declines, and it is also
 what Fedora proper would require if this were ever submitted there.
 
+The COPR owner is the **FAS** username (`lxk-98`), which is not the same
+string as the GitHub owner (`LXK-98`). Everything above and in `install.sh`
+uses the GitHub one; only `dnf copr enable` takes the FAS one.
+
 ### One-time setup
 
 1. A [Fedora account](https://accounts.fedoraproject.org/) — the same FAS
    account used for Bugzilla and the wiki.
-2. Sign in at [copr.fedorainfracloud.org](https://copr.fedorainfracloud.org/)
-   once, so the account exists on the COPR side.
-3. Install the client and get a token:
+
+2. **Sign in at [copr.fedorainfracloud.org](https://copr.fedorainfracloud.org/)
+   once, in a browser.** This is not optional and cannot be skipped with the
+   CLI: COPR creates the user record on first web login, and until it exists
+   every API call fails with
+
+   > Valid GSSAPI authentication supplied for user 'lxk-98', but this user
+   > doesn't exist in the Copr build system. Please log-in using the web-UI
+   > (without GSSAPI) first.
+
+   If that page returns **504 Gateway Timeout** after the Fedora login
+   redirect, it is COPR's dashboard render timing out, not your account. The
+   anonymous site stays healthy throughout, so the status page shows nothing.
+   Retry — and check `copr-cli whoami` after each attempt, since the record
+   may be created even when the page that follows never renders. If it keeps
+   failing, report it on the
+   [COPR tracker](https://github.com/fedora-copr/copr/issues) or in
+   `#copr:fedoraproject.org` on Matrix.
+
+3. Authenticate the CLI. Either Kerberos, which needs no token:
 
    ```bash
-   sudo dnf install copr-cli
+   sudo dnf install copr-cli fedora-packager
+   fkinit -u lxk-98      # FAS password + OTP; ticket lasts ~28h
+   copr-cli whoami
    ```
 
-   Then open <https://copr.fedorainfracloud.org/api/> and paste what it shows
-   into `~/.config/copr`. The token expires; the same page reissues it.
+   or a token from <https://copr.fedorainfracloud.org/api/>, pasted into
+   `~/.config/copr`. A token takes precedence over a Kerberos ticket when
+   both are present. Either way, step 2 must have happened first.
+
+   `copr-cli` reports a missing credential as *"Response is not in JSON
+   format, there is probably a bug in the API code"*. That is an HTML `401`
+   it failed to parse, not a COPR bug — run with `--debug` to see the real
+   status.
 
 4. Create the project:
 
@@ -98,7 +127,7 @@ what Fedora proper would require if this were ever submitted there.
      --chroot fedora-rawhide-x86_64 \
      --enable-net on \
      --description "Headless Quick Share (Nearby Share) daemon for Linux" \
-     --instructions "dnf copr enable LXK-98/quickshare-daemon && dnf install quickshare-daemon"
+     --instructions "dnf copr enable lxk-98/quickshare-daemon && dnf install quickshare-daemon"
    ```
 
    x86_64 only, because that is the only architecture the release binary is
@@ -109,7 +138,7 @@ what Fedora proper would require if this were ever submitted there.
 The straightforward way, from a tag that already exists:
 
 ```bash
-copr-cli build LXK-98/quickshare-daemon \
+copr-cli build lxk-98/quickshare-daemon \
   https://github.com/LXK-98/quickshare-daemon/releases/download/v0.1.0/quickshare-daemon-0.1.0-1.src.rpm
 ```
 
@@ -118,7 +147,7 @@ We do not publish an SRPM, so build one first:
 ```bash
 spectool -g -R packaging/quickshare-daemon.spec    # fetches Source0 from the tag
 rpmbuild -bs packaging/quickshare-daemon.spec
-copr-cli build LXK-98/quickshare-daemon ~/rpmbuild/SRPMS/quickshare-daemon-0.1.0-1.*.src.rpm
+copr-cli build lxk-98/quickshare-daemon ~/rpmbuild/SRPMS/quickshare-daemon-0.1.0-1.*.src.rpm
 ```
 
 ### Rebuilding automatically on a tag
