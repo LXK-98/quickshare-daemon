@@ -146,6 +146,37 @@ were HCI events and 1242 commands — but only **6 were ACL**. L2CAP, SDP and
 RFCOMM payloads are therefore absent, which is why the UUID had to come from an
 SDP query instead. Connection setup and BLE activity are fully visible.
 
+## The decisive experiment ran, and was negative
+
+2026-11-08. Registered an RFCOMM profile with
+`a82efa21-ae5c-3dde-9bbc-f16da7b16c5a`, advertised `0xFE2C` carrying the same
+service data `rqs_lib`'s `BleAdvertiser` sends, made the adapter discoverable
+and pairable, and turned Wi-Fi off on the phone.
+
+**The phone did not offer this machine, in either direction.**
+
+This time both halves were confirmed up before the test — an earlier attempt
+had the advertisement silently rejected by BlueZ (`Failed to parse
+advertisement`, caused by a `local_name` pushing it past the 31-byte limit)
+while the run reported itself as testing both. That run was a repeat of the
+RFCOMM-only one and should be disregarded.
+
+So one of three things is wrong:
+
+1. **The UUID is not Quick Share's.** Possible, though it is the only
+   vendor-specific entry in the Pixel's SDP record.
+2. **The BLE payload is not a valid receiver advertisement.** Most likely.
+   `rqs_lib`'s `SERVICE_DATA` is a hardcoded 26-byte constant — a blob captured
+   from some device at some point. Quick Share's advertisement near-certainly
+   encodes device-specific content (a name hash, a salt, an account key), so a
+   replayed stale one would be rejected. It is also what `rqs_lib` broadcasts
+   while *sending*, not what a receiver advertises.
+3. **Receiver discovery does not work this way at all.**
+
+These cannot be distinguished with the hardware available. The next step is
+desk research into the published reverse-engineering of the Nearby Connections
+Bluetooth medium and its BLE advertisement format, not more probing.
+
 ## Where this leaves it: blocked on protocol knowledge, not on code
 
 The groundwork is done and useful regardless — the handshake is transport-generic

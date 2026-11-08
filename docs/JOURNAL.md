@@ -3,6 +3,43 @@
 Per-session record: what was done, what is verified, what broke, what is next.
 Newest first.
 
+## 2026-11-08 — The decisive Bluetooth experiment ran, and was negative
+
+Registered the candidate RFCOMM UUID, advertised `0xFE2C` with `rqs_lib`'s
+service data, adapter discoverable and pairable, Wi-Fi off on the phone. **The
+phone did not offer this machine, in either direction.**
+
+Three candidate explanations, undistinguishable with the hardware here, in
+order of likelihood: the BLE payload is not a valid *receiver* advertisement
+(`rqs_lib`'s `SERVICE_DATA` is a hardcoded blob captured from some other
+device, and is what it sends while *sending*, not receiving); the UUID is not
+Quick Share's; or receiver discovery does not work this way at all.
+
+**A false result I nearly reported as real.** The first combined run had its
+advertisement silently rejected by BlueZ — `Failed to parse advertisement`,
+from a `local_name` pushing it past the 31-byte limit — while the program
+carried on and the run looked like a valid test of both halves. It was a repeat
+of the RFCOMM-only run. The failure is now fatal rather than logged, and I
+smoke-tested registration before asking for another phone-side attempt. Third
+measurement this session spoiled by not checking the instrument first.
+
+**Also mishandled:** killing that run with `pkill` left the adapter
+`Discoverable: yes` / `Pairable: yes`, since the program never reached its
+cleanup. Caught and reverted, but a background process that changes system
+state should not be killed from outside its own teardown.
+
+Probe kept at `docs/rfcomm-profile-probe.rs`.
+
+**Stopping the hardware experiments here.** They are getting less informative
+per attempt, and the open questions are protocol facts rather than
+configuration. What this line of work did establish is worth keeping: Quick
+Share genuinely uses classic Bluetooth with no shared network, the Pixel's BD
+address, a candidate service UUID, a working no-root Android HCI capture
+pipeline, and a handshake that is already transport-generic with `Target` and
+`Medium` slots waiting.
+
+---
+
 ## 2026-11-08 — Found the Quick Share Bluetooth UUID, and proved the medium is real
 
 Two results that unblock the transport, from `docs/BLUETOOTH_FINDINGS.md`.
