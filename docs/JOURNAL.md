@@ -3,6 +3,54 @@
 Per-session record: what was done, what is verified, what broke, what is next.
 Newest first.
 
+## 2026-11-08 — A full HCI capture: Quick Share does use RFCOMM, and I was wrong
+
+A **Pixel** bug report includes `FS/data/misc/bluetooth/logs/btsnoop_hci.log`
+complete with ACL payloads — 1.4 MB. One UI's does not, which was the earlier
+dead end. That gave the whole exchange.
+
+**The receiver publishes an SDP record:**
+
+```
+Service Class ID:  a82efa21-ae5c-3dde-9bbc-f16da7b16c5a
+Protocol:          L2CAP -> RFCOMM, channel 0x0a (10)
+Attribute 0x0100:  "NearbySharing"
+```
+
+The sender does an SDP Service Search Attribute Request for exactly that UUID
+and then opens RFCOMM. **The UUID inferred from the Pixel's SDP record was
+right.**
+
+**So the previous entry's conclusion was wrong.** I had written that Bluetooth
+is not a transport and that transfer without a shared network is "not
+achievable against stock Android". NearDrop's protocol notes describe the mDNS
+path accurately, but they document what *that client* implements, not
+everything Android does — and I treated one community document as exhaustive.
+The capture contradicts it directly.
+
+**Why our experiment actually failed:** not the UUID. The service record was
+named `Quick Share` rather than `NearbySharing`, and more fundamentally the
+sender never searches — the Pixel's log shows an **unsolicited Connect
+Request** from the Z Fold, no inquiry at all. It connected to an address it
+already knew, both phones being on the same Google account. A Linux box that
+has never been paired is in no such list.
+
+Also found: a BLE advert the Pixel received carrying service data under
+**`0xFEF3`**, not `0xFE2C` — matching the QShare-linux layout I had set aside
+as unverified.
+
+**Next, and well-founded this time:** pair the laptop with the Pixel over
+classic Bluetooth, then publish the SDP record exactly as captured. Pairing is
+what puts our address in the phone's known-device list, which is the gap.
+
+**Two lessons.** Treating one community write-up as the full protocol produced
+a confident wrong conclusion; the primary capture settled in minutes what the
+documentation got incomplete. And the earlier "research first" lesson still
+holds — it was right that desk research beat guessing, just wrong that it was
+sufficient.
+
+---
+
 ## 2026-11-08 — Research closes the Bluetooth question: no receiver discovery
 
 NearDrop's `PROTOCOL.md` answers it. **A Quick Share receiver is discovered over

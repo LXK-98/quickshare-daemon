@@ -207,12 +207,19 @@ classic ACL connection captured between the two phones is real, but it is
 something Google Play Services does Android-to-Android, outside the protocol
 that has been reverse-engineered.
 
-### What this means for "transfer without a shared Wi-Fi network"
+### Superseded — see "The full Bluetooth recipe" below
 
-**Not achievable against stock Android with the documented protocol.** The
+The conclusion in this section was **wrong**, and is kept only because the
+reasoning that produced it is instructive. A full HCI capture from the Pixel
+showed Quick Share using RFCOMM over classic Bluetooth, with a published SDP
+record. NearDrop's protocol notes describe the mDNS path accurately but are not
+exhaustive: they document what *that* client implements, not everything Android
+does.
+
+~~**Not achievable against stock Android with the documented protocol.** The
 discovery mechanism is mDNS, which needs a shared link. Implementing a
 Bluetooth medium on our side would produce something no Android device looks
-for.
+for.~~
 
 What remains possible, in descending order of plausibility:
 
@@ -235,6 +242,59 @@ What remains possible, in descending order of plausibility:
   AI-assisted, so treated as unreliable)
 
 These are unofficial and some are years old; Google publishes no spec.
+
+## The full Bluetooth recipe, from a complete HCI capture
+
+2026-11-08. A **Pixel** bug report does include
+`FS/data/misc/bluetooth/logs/btsnoop_hci.log` — 1.4 MB, complete with ACL
+payloads. (One UI's does not; that was the earlier dead end.) Decoded with
+`btmon -r`, a Z Fold → Pixel transfer with the Pixel's Wi-Fi off shows the whole
+exchange.
+
+### The receiver publishes an SDP record
+
+```
+Service Class ID:   a82efa21-ae5c-3dde-9bbc-f16da7b16c5a
+Protocol:           L2CAP -> RFCOMM, channel 0x0a (10)
+Attribute 0x0100:   "NearbySharing"
+```
+
+The sender issues an SDP Service Search Attribute Request for that exact UUID,
+gets this back, then opens RFCOMM (SABM/UA on PSM 3). **The UUID inferred from
+the Pixel's SDP record was correct**, and the service name is `NearbySharing`.
+
+### How the sender found the receiver
+
+It did not search. The Pixel's log shows an **unsolicited `Connect Request`**
+from the Z Fold — no inquiry, no scan preceding it. The Z Fold already knew the
+Pixel's BD address, which is consistent with both devices being signed into the
+same Google account (the transfer also needed no acceptance on the Pixel, the
+"Your devices" flow).
+
+Also present just before: a BLE advertisement the Pixel *received* carrying
+service data under **`0xFEF3`** (Google), payload `11 01 d0 36 9d 5d` — not
+`0xFE2C`. This matches the layout the QShare-linux README describes, which had
+been set aside as unverified.
+
+### Why our experiment failed, precisely
+
+Two reasons, neither of which was the UUID:
+
+1. The service record was named `Quick Share`, not `NearbySharing`.
+2. More fundamentally, **nothing told the phone our address existed.** The
+   sender connects to an address it already knows; it does not go looking. A
+   Linux box that has never been paired is not in any such list.
+
+### The next experiment, and it is well-founded now
+
+**Pair the laptop with the Pixel over classic Bluetooth first**, then publish
+the SDP record exactly as above — UUID, RFCOMM channel, service name
+`NearbySharing`. Pairing is what puts our BD address in the phone's known-device
+list, which is the gap the previous attempt had.
+
+If that works, a Bluetooth transport becomes real: the frame format is
+medium-agnostic, the handshake is already transport-generic (D-015), and
+`Target::Bluetooth` is waiting for a stream.
 
 ## Where this leaves it: blocked on protocol knowledge, not on code
 
