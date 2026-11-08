@@ -27,18 +27,53 @@ Quick Share protocol.
 This daemon targets **≤ 8 MB idle RSS** by keeping the protocol and dropping
 the interface. The protocol implementation is the same one Packet uses.
 
-## Building
+## Installing
+
+### Fedora
+
+```bash
+sudo dnf copr enable <owner>/quickshare-daemon
+sudo dnf install quickshare-daemon
+systemctl --user enable --now quickshare-daemon
+```
+
+Updates then arrive with `dnf upgrade` like anything else. The Nautilus menu is
+a separate package: `sudo dnf install quickshare-daemon-nautilus`.
+
+### Other distributions
+
+```bash
+curl -fsSLO https://github.com/<owner>/quickshare-daemon/releases/latest/download/install.sh
+less install.sh      # read it before running it
+sh install.sh
+```
+
+Installs to `~/.local/bin`, adds a systemd user unit, and adds the Nautilus
+menu if `nautilus-python` is present. It verifies a published SHA-256 before
+unpacking. **Re-run it to update**; `sh install.sh --uninstall` removes it,
+leaving your config and received files alone.
+
+The published binary needs glibc 2.35 or newer (Ubuntu 22.04, Fedora 36,
+Debian 12 and later). Older systems can build from source.
+
+### There is no auto-update
+
+Deliberately. Adding one would mean an HTTP and TLS stack in a binary whose
+whole point is its footprint, and a background daemon that overwrites itself is
+security surface that needs signing to do properly — for something your package
+manager already does. See `docs/DECISIONS.md` D-017.
+
+## Building from source
 
 Requires a protobuf compiler, because `rqs_lib` generates the Nearby protocol
 types at build time and `prost-build` does not bundle one:
 
 ```bash
-sudo dnf install protobuf-compiler   # Fedora
+sudo dnf install protobuf-compiler dbus-devel   # Fedora
 cargo build --release
 ```
 
-`libdbus` development files are also needed (`dbus-devel` on Fedora), for
-`bluer`.
+`libdbus` development files are needed for `bluer`.
 
 ## Configuration
 

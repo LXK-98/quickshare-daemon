@@ -219,7 +219,11 @@ daemon's footprint.
       total at idle, down from Packet's 30. Nothing left worth trimming
 - [x] Measure again; compare with Packet — 7× less RSS, 12× less PSS, 15×
       fewer threads (docs/MEASUREMENTS.md)
-- [ ] Install script or `cargo install` + unit/extension install
+- [x] Install script or `cargo install` + unit/extension install — two
+      channels: a COPR spec for Fedora (`dnf upgrade` is then the update
+      mechanism) and `packaging/install.sh` for everything else, with GitHub
+      Actions building a glibc-2.35 binary and publishing it with a checksum.
+      No self-update, deliberately (D-017)
 
 ### Transports without a shared Wi-Fi network — investigated, not viable
 

@@ -327,6 +327,49 @@ a file you need to look at before running.
 
 ---
 
+## D-017 — Distribution: COPR and release tarballs, and no self-update
+
+**Date:** 2026-11-08
+
+**Context.** Alex wants installation and updating to be as simple as possible,
+and asked whether a `quickshare update` command or auto-update made sense.
+
+**Decision.** Two channels, and **no self-update**.
+
+**Fedora: a COPR repository.** `dnf copr enable` then `dnf install`, after
+which `dnf upgrade` keeps it current. This is simpler than any script we could
+write *and* it is the update mechanism, so nothing further is needed. COPR
+builds from `packaging/quickshare-daemon.spec`, which splits the Nautilus menu
+into a subpackage because it is the only component requiring
+`nautilus-python`.
+
+**Everything else: GitHub releases plus `packaging/install.sh`.** CI builds on
+**Ubuntu 22.04 rather than the newest runner**, because the binary links glibc
+and building on a newer base raises the minimum version it will run against —
+22.04 gives glibc 2.35 against 2.39 on 24.04, which would silently exclude
+older distributions. The script verifies a published SHA-256 before unpacking
+anything, and re-running it is the update path.
+
+**Rejected: self-update or auto-update.** Three reasons:
+
+1. **It would need an HTTP and TLS stack.** `reqwest` or `rustls` adds several
+   megabytes to a 3.2 MB binary whose entire justification is a measured
+   footprint. Paying that for something `dnf` already does is the wrong trade
+   in a project that measures itself.
+2. **A background daemon that overwrites its own binary is supply-chain
+   surface.** Doing it responsibly means signature verification and key
+   management, which is more machinery again.
+3. **It fights the package manager** on any packaged install.
+
+The honest form of "auto update" here is to let the distribution do it.
+
+**On `curl | sh`.** The release notes show downloading the script and reading
+it before running, rather than leading with a pipe into a shell. Piping remote
+code into a shell is normal and also a thing people are right to dislike; the
+checksum and a readable script are the least we can do.
+
+---
+
 ## D-016 — Option B implemented: identity separate from address
 
 **Date:** 2026-11-07

@@ -3,6 +3,44 @@
 Per-session record: what was done, what is verified, what broke, what is next.
 Newest first.
 
+## 2026-11-08 — Scrubbed personal data, then packaging
+
+**Scrubbed before going public.** The docs had accumulated real identifiers
+while debugging: the phone's Bluetooth MAC, a person's name inside a device
+name, home LAN and hotspot subnets, mDNS endpoint ids, a USB serial,
+`/home/<user>` paths. None of it is what any conclusion rests on, and all of it
+would have been permanently public.
+
+Replaced with documentation-range equivalents (RFC 5737 `192.0.2.0/24`,
+placeholder MACs, `EXAMPLEENDPT` ids) chosen so the findings still read —
+the endpoint-stability table still shows two distinct ids across two days,
+which was its point. History rewritten across all 36 commits with
+`git filter-branch` (tree *and* messages), `refs/original` deleted, reflog
+expired, repacked. Verified afterwards: zero matches in any tree or message,
+no unreachable objects. 50/50 tests still pass, no code was touched.
+
+A verification trap worth remembering: the first check reported leaks in 27
+commits, because it ran before `refs/original/` was deleted and was therefore
+scanning the pre-rewrite copies. The scrub had worked; the check was looking at
+the backup.
+
+**Packaging**, per D-017:
+
+- `packaging/quickshare-daemon.spec` for COPR, with the Nautilus menu as a
+  subpackage since it is the only part needing `nautilus-python`.
+- `packaging/install.sh` for other distributions — checksum-verified,
+  re-runnable to update, `--uninstall` to remove.
+- `.github/workflows/{ci,release}.yml`. The release builds on **Ubuntu 22.04,
+  not the newest runner**: the binary links glibc, so a newer base would raise
+  the minimum version it runs against — 2.35 instead of the 2.39 this laptop
+  produces, which would have excluded anything older than Ubuntu 24.04.
+- **No self-update.** It would need an HTTP+TLS stack in a binary whose whole
+  justification is its footprint, and a daemon that overwrites itself is
+  security surface needing signing to do properly — for something the package
+  manager already does.
+
+---
+
 ## 2026-11-08 — Nautilus verified end to end; dependency documented
 
 **Files arrived on the phone through both paths** — the device submenu and the
