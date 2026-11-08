@@ -3,6 +3,40 @@
 Per-session record: what was done, what is verified, what broke, what is next.
 Newest first.
 
+## 2026-11-08 — Research closes the Bluetooth question: no receiver discovery
+
+NearDrop's `PROTOCOL.md` answers it. **A Quick Share receiver is discovered over
+mDNS** — `_FC9F5ED42C8A._tcp.` with the endpoint id in the instance name and
+endpoint info in the `n` TXT record, which is exactly what we already do. **The
+`0xFE2C` / `fc 12 8e …` advertisement is the *sender's*:** Android broadcasts it
+while searching for targets, and a receiver that is not currently advertising
+mDNS sees it, wakes, and starts. A trigger, not a presence announcement.
+
+**So the failed experiment had the roles backwards** — we broadcast "I am
+looking for targets" and waited to be listed as one. No RFCOMM registration
+would have helped and the UUID was beside the point. I had guessed the payload
+was "stale"; it is worse than that, it is the wrong role's advertisement.
+
+**Bluetooth is not a transport in any third-party implementation.** NearDrop,
+rquickshare and NearShare are all mDNS with BLE as a trigger. The classic ACL
+connection captured between the two phones is real but is Play Services doing
+something Android-to-Android that is outside the reverse-engineered protocol.
+
+**Therefore "transfer without a shared Wi-Fi network" is not achievable against
+stock Android** with the documented protocol: discovery needs a shared link. A
+Bluetooth medium on our side would produce something no Android device looks
+for. What remains is a `WIFI_HOTSPOT` bandwidth upgrade (which still needs an
+initial connection, so it does not solve discovery) or Linux-to-Linux, where
+both ends are ours.
+
+Sources and the full reasoning in `docs/BLUETOOTH_FINDINGS.md`.
+
+**Lesson worth keeping:** one search and one document read answered what five
+hardware experiments could not, and would have prevented three of them. The
+investigation order should have been protocol-first.
+
+---
+
 ## 2026-11-08 — The decisive Bluetooth experiment ran, and was negative
 
 Registered the candidate RFCOMM UUID, advertised `0xFE2C` with `rqs_lib`'s

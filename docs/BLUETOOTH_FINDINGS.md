@@ -177,6 +177,65 @@ These cannot be distinguished with the hardware available. The next step is
 desk research into the published reverse-engineering of the Nearby Connections
 Bluetooth medium and its BLE advertisement format, not more probing.
 
+## The research answers it: there is no Bluetooth receiver discovery
+
+2026-11-08. From grishka/NearDrop's `PROTOCOL.md`, the best community
+write-up of the protocol:
+
+- **A receiver is discovered over mDNS.** Service type `_FC9F5ED42C8A._tcp.`,
+  instance name carrying a `0x23` byte, the 4-byte endpoint id, the 3-byte
+  service id `FC 9F 5E` and two zero bytes; TXT key `n` carrying base64
+  endpoint info (bit field with version/visibility/device type, 16 bytes of
+  identity data, the device name when visible). **This is exactly what we
+  already do.**
+- **The `0xFE2C` / `fc 12 8e 01 42 …` advertisement is the *sender's*.**
+  *"Android sends these BLE advertisements periodically while searching for
+  Nearby Share targets"*, and a receiver *"does not advertise the MDNS service
+  all the time"* — it *"waits for a BLE advertisement with the following
+  parameters"* and then starts. It is a wake-up trigger, not a presence
+  announcement.
+
+**So our experiment had the roles backwards.** We broadcast "I am looking for
+targets" and then waited to be listed *as* a target. No RFCOMM registration
+would have fixed that, and the UUID question was beside the point. Explanation
+2 from the section above was right for a reason I had not identified: the
+payload is not merely stale, it is the wrong role's advertisement entirely.
+
+**Bluetooth is not a transport in any third-party implementation.** NearDrop,
+rquickshare and NearShare are all mDNS-based with BLE as a trigger only. The
+classic ACL connection captured between the two phones is real, but it is
+something Google Play Services does Android-to-Android, outside the protocol
+that has been reverse-engineered.
+
+### What this means for "transfer without a shared Wi-Fi network"
+
+**Not achievable against stock Android with the documented protocol.** The
+discovery mechanism is mDNS, which needs a shared link. Implementing a
+Bluetooth medium on our side would produce something no Android device looks
+for.
+
+What remains possible, in descending order of plausibility:
+
+1. **`WIFI_HOTSPOT` bandwidth upgrade.** `BandwidthUpgradeNegotiationFrame`
+   carries `WifiHotspotCredentials { ssid, password }`, so a connection
+   established over one medium can move to a hotspot. That still needs an
+   initial connection, so it does not solve discovery.
+2. **Linux-to-Linux.** Two instances of this daemon could agree any transport
+   they like, since both ends are ours. Useful, but not the goal.
+3. **Nothing else** without Google Play Services internals.
+
+### Sources
+
+- grishka/NearDrop `PROTOCOL.md` — https://github.com/grishka/NearDrop/blob/master/PROTOCOL.md
+- Dhiva-Labs/NearShare — https://github.com/Dhiva-Labs/NearShare
+- asulwer/rquickshare PR #39, on `0xFE2C` false positives — https://github.com/asulwer/rquickshare/pull/39
+- google/nearby discussion #2446 — https://github.com/google/nearby/discussions/2446
+- adityatr64/QShare-linux — https://github.com/adityatr64/QShare-linux (describes a
+  different layout with `0xFEF3`; unverified, and the README says it is
+  AI-assisted, so treated as unreliable)
+
+These are unofficial and some are years old; Google publishes no spec.
+
 ## Where this leaves it: blocked on protocol knowledge, not on code
 
 The groundwork is done and useful regardless — the handshake is transport-generic

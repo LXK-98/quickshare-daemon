@@ -217,6 +217,21 @@ daemon's footprint.
       fewer threads (docs/MEASUREMENTS.md)
 - [ ] Install script or `cargo install` + unit/extension install
 
+### Transports without a shared Wi-Fi network — investigated, not viable
+
+Researched 2026-11-07/08 at Alex's request. **Not achievable against stock
+Android.** A Quick Share receiver is discovered over mDNS, which needs a shared
+link; the BLE `0xFE2C` beacon is the *sender's* wake-up trigger, not a presence
+announcement, and no third-party implementation uses Bluetooth as a transport.
+Full findings, including a confirmed classic-Bluetooth capture between two
+Android phones that Play Services does outside the documented protocol, in
+`docs/BLUETOOTH_FINDINGS.md`.
+
+Groundwork done along the way and worth keeping: the handshake is generic over
+its transport (D-015), device identity is separate from address (D-016), and
+`Medium`/`Target` have Bluetooth slots. None of it is wasted — it is what a
+Linux-to-Linux transport would need, and it fixed real bugs on the way.
+
 ### Phase 5 — Optional: ~0 MB idle via socket activation (~1–2 days)
 
 - Patch (fork) `rqs_lib` to accept a listening socket fd from systemd instead of
