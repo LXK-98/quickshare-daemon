@@ -32,7 +32,7 @@ the interface. The protocol implementation is the same one Packet uses.
 ### Fedora
 
 ```bash
-sudo dnf copr enable <owner>/quickshare-daemon
+sudo dnf copr enable LXK-98/quickshare-daemon
 sudo dnf install quickshare-daemon
 systemctl --user enable --now quickshare-daemon
 ```
@@ -43,7 +43,7 @@ a separate package: `sudo dnf install quickshare-daemon-nautilus`.
 ### Other distributions
 
 ```bash
-curl -fsSLO https://github.com/<owner>/quickshare-daemon/releases/latest/download/install.sh
+curl -fsSLO https://github.com/LXK-98/quickshare-daemon/releases/latest/download/install.sh
 less install.sh      # read it before running it
 sh install.sh
 ```
