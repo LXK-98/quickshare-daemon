@@ -3,6 +3,30 @@
 Per-session record: what was done, what is verified, what broke, what is next.
 Newest first.
 
+## 2026-11-08 — Nautilus verified end to end; dependency documented
+
+**Files arrived on the phone through both paths** — the device submenu and the
+"Other device…" picker. The Nautilus integration is complete and confirmed by
+the receiving device, not by our own logs.
+
+Documented the `nautilus-python` requirement properly in the README, since it
+is a **runtime** dependency rather than a build one: without it the extension
+file is inert. It is small (~58 KB, and its only real dependency,
+`python3-gobject-base`, is present on any GNOME install) and Packet's plugin
+needs the same package.
+
+Two alternatives recorded as considered and rejected: a Nautilus *script*,
+which needs nothing installed but lands under a nested *Scripts* submenu and
+cannot build a dynamic device list; and a native C extension, which avoids
+Python but would need recompiling against each Nautilus ABI — the sort of
+ongoing maintenance this project set out to avoid.
+
+The README now also says the extension is optional: the daemon, CLI and D-Bus
+API all work without it, and it is the only component with a dependency beyond
+the daemon itself.
+
+---
+
 ## 2026-11-08 — Nautilus extension works; the first failure was impatience
 
 Confirmed in the UI: the submenu lists the phone, and the "Other device…"

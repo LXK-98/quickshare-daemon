@@ -63,19 +63,49 @@ nothing verifies. It is a convenience, not an authorisation check.
 ## Nautilus integration
 
 A "Send with Quick Share" menu for Nautilus, listing nearby devices from the
-running daemon:
+running daemon.
+
+**This is optional** — the daemon, the CLI and the D-Bus API all work without
+it. It is the only part of the project with a dependency beyond the daemon
+itself.
 
 ```bash
-sudo dnf install nautilus-python
+sudo dnf install nautilus-python     # required at runtime, not just to build
 mkdir -p ~/.local/share/nautilus-python/extensions
 cp data/quickshare_nautilus.py ~/.local/share/nautilus-python/extensions/
 nautilus -q    # restart Nautilus to load it
 ```
 
-It needs the daemon running, and shows nothing if there isn't one. Known
-devices appear as a submenu; "Other device…" opens a picker that waits for
-discovery, which is the usual path the first time, since Nautilus builds the
-menu faster than mDNS answers.
+### About the `nautilus-python` requirement
+
+`nautilus-python` is what lets Nautilus load Python extensions at all; without
+it the file is inert. It is **not** a development-only package — anyone using
+the menu needs it installed.
+
+It is small: about 58 KB, and its only substantial dependency is
+`python3-gobject-base`, which any GNOME install already has. Packet's Nautilus
+plugin requires the same package.
+
+Two alternatives were considered and rejected:
+
+- **A Nautilus *script*** (an executable in `~/.local/share/nautilus/scripts/`)
+  needs nothing installed, but lands under a nested *Scripts* submenu and
+  cannot build a dynamic device list — it would always go straight to the
+  picker.
+- **A native C extension** avoids Python entirely, but Nautilus's extension ABI
+  changes between major versions, so it would need recompiling against each
+  one. That is the kind of ongoing maintenance this project set out to avoid.
+
+### Using it
+
+The daemon must be running; with no daemon the menu does not appear at all,
+rather than appearing and failing.
+
+Known devices show as a submenu. **"Other device…" opens a picker that waits up
+to 45 seconds** for one to appear, which is the usual path the first time:
+Nautilus builds the menu synchronously, while a phone only starts advertising
+once its Quick Share screen is open. Open Quick Share on the other device
+first and the submenu will be populated.
 
 ## Credits and license
 
