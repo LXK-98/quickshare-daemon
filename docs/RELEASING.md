@@ -181,8 +181,9 @@ copr-cli edit-package-scm quickshare-daemon \
 (`add-package-scm` fails once a package exists — an uploaded SRPM creates one
 — so `edit-package-scm` converts it instead.)
 
-The GitHub half has to be added by hand once, because the webhook URL embeds a
-secret. From *Settings → Integrations* on the
+The GitHub half is in place too: hook `709034416`, content type JSON,
+subscribed to `create` alone. To recreate it — the URL embeds a secret, so it
+has to be copied by hand — take it from *Settings → Integrations* on the
 [COPR project page](https://copr.fedorainfracloud.org/coprs/lxk-98/quickshare-daemon/),
 copy the GitHub webhook URL, then either paste it into the repository's
 *Settings → Webhooks → Add webhook*, or:
