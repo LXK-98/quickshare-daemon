@@ -150,10 +150,12 @@ daemon's footprint.
       "Open" on a URL needs a scheme allowlist before handing a
       remote-supplied string to `xdg-open`, and "Copy" needs a Wayland
       clipboard path, which a daemon with no window does not get for free
-- [x] Completion/failure notifications — inbound ones written but still not
-      exercised by a real received transfer; outbound confirmed on 2026-11-07
-- [x] systemd user unit (`quickshare-daemon.service`) — written, not yet
-      installed or tested
+- [x] Completion/failure notifications — both directions confirmed against a
+      real transfer: inbound on 2026-11-06 (notification, file received,
+      contents opened), outbound on 2026-11-07
+- [x] systemd user unit (`quickshare-daemon.service`) — installed and
+      exercised by `packaging/install.sh`, and shipped in the RPM at
+      `/usr/lib/systemd/user/`
 - [x] **Checkpoint:** idle RSS/PSS measured — **6.2 MB RSS / 3.5 MB PSS /
       2 threads** in release, against a ≤ 8 MB target and a 44.7 MB baseline
       (docs/MEASUREMENTS.md). A file was successfully sent from an Android
@@ -189,12 +191,13 @@ daemon's footprint.
 - [x] D-Bus API: `StartDiscovery`, `ListDevices`, `SendFiles`, `Visibility` —
       `org.quickshare.Daemon1`, verified against the live session bus including
       refcounted discovery leases released on client departure (D-013).
-      `SendFiles` itself has not yet been driven through to a real transfer
+      `SendFiles` has since been driven through real transfers from both the
+      CLI and the Nautilus menu
 - [x] Outbound transfers with progress/result notifications — the daemon reports
       them over D-Bus (`TransferPin`, `TransferFinished`) and posts one desktop
       notification per transfer, updated in place from the PIN prompt to the
-      result. The notification mechanics are verified against GNOME Shell; the
-      integration has not been driven by a real transfer yet
+      result. Verified against GNOME Shell and confirmed end to end by real
+      sends on 2026-11-07
 - [x] Nautilus extension with device submenu (or zenity fallback) —
       `data/quickshare_nautilus.py`, both: a submenu of known devices plus an
       "Other device…" entry that opens a zenity picker and waits for discovery.
